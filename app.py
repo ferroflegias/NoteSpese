@@ -17,22 +17,22 @@ st.set_page_config(
 
 # --- SYSTEM LOGIN ---
 def check_password():
-    def password_entered():
-        if st.session_state["password"] == st.secrets["PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        st.text_input("🔑 Inserisci la Password di accesso", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        st.text_input("🔑 Inserisci la Password di accesso", type="password", on_change=password_entered, key="password")
-        st.error("😕 Password errata")
-        return False
-    else:
+    """Ritorna True se l'utente ha inserito la password corretta."""
+    if st.session_state.get("password_correct", False):
         return True
+
+    # Mostra l'input per la password
+    pwd_input = st.text_input("🔑 Inserisci la Password di accesso", type="password")
+    
+    if pwd_input:
+        if pwd_input == st.secrets["PASSWORD"]:
+            st.session_state["password_correct"] = True
+            st.rerun()  # Ricarica la pagina sbloccando l'app
+        else:
+            st.error("😕 Password errata")
+            return False
+            
+    return False
 
 if not check_password():
     st.stop()
