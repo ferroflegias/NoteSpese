@@ -634,7 +634,7 @@ with tab4:
     with col_e1:
         anno_exp = st.number_input("Anno Esportazione", value=2026, step=1)
     with col_e2:
-        mese_exp = st.selectbox("Mese Esportazione", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
+        mese_exp_pdf = st.selectbox("Mese per PDF Allegati", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
 
     st.divider()
 
@@ -646,10 +646,15 @@ with tab4:
         tipo_exp = st.selectbox("Modalità Excel", ["Mese Singolo", "Range di Mesi", "Anno Completo"])
         
         if tipo_exp == "Mese Singolo":
-            m_in, m_fi = mese_exp, mese_exp
+            m_sel = st.selectbox("Seleziona Mese Excel", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
+            m_in, m_fi = m_sel, m_sel
             modo_str = 'singolo'
         elif tipo_exp == "Range di Mesi":
-            m_in, m_fi = 1, mese_exp
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                m_in = st.selectbox("Da Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=0)
+            with col_m2:
+                m_fi = st.selectbox("A Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
             modo_str = 'range'
         else:
             m_in, m_fi = 1, 12
@@ -670,11 +675,12 @@ with tab4:
     # 2. GENERAZIONE PDF ALLEGATI
     with col_btn2:
         st.markdown("#### 🖼️ PDF Allegati Scontrini")
+        st.caption(f"Verranno scaricate le foto del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
         use_crop = st.checkbox("✂️ Ritaglia scontrini con AI/OpenCV", value=True)
         
         if st.button("🖼️ Genera PDF Allegati", type="primary", use_container_width=True):
             with st.spinner("Scarico e processamento immagini in corso..."):
-                pdf_res = genera_pdf_allegati(anno_exp, mese_exp, auto_crop=use_crop)
+                pdf_res = genera_pdf_allegati(anno_exp, mese_exp_pdf, auto_crop=use_crop)
                 
             if pdf_res and os.path.exists(pdf_res):
                 with open(pdf_res, "rb") as f_pdf:
