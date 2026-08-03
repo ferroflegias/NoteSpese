@@ -308,6 +308,7 @@ with tab1:
 with tab2:
     st.subheader("Archivio Spese Registrate")
     
+    # Esegue sempre la query aggiornata al caricamento del Tab
     response = supabase.table("spese").select("*").order("data", desc=True).execute()
     data_list = response.data
 
@@ -315,6 +316,8 @@ with tab2:
         st.info("Nessuna spesa memorizzata nel database.")
     else:
         df_spese = pd.DataFrame(data_list)
+        
+        # Mostra la tabella dati aggiornata
         st.dataframe(
             df_spese[['id', 'data', 'destinazione', 'scopo', 'categoria', 'metodo_pagamento', 'importo', 'valuta_straniera', 'note']],
             use_container_width=True
@@ -323,6 +326,7 @@ with tab2:
         st.divider()
         st.subheader("Modifica / Elimina Spesa")
         
+        # Selettore record da modificare
         record_id = st.number_input("Inserisci ID spesa da modificare/eliminare", min_value=1, step=1)
         
         row = df_spese[df_spese['id'] == record_id]
@@ -362,21 +366,16 @@ with tab2:
                     }
                     supabase.table("spese").update(updated_record).eq("id", int(record_id)).execute()
                     st.success("Record aggiornato!")
-                    st.rerun()
+                    st.rerun()  # Forza il refresh dell'interfaccia
                     
                 if delete_mod:
-                    # 1. Recupera l'URL della foto del record da eliminare
                     photo_url = rec.get('allegato_path')
-                    
-                    # 2. Se presente, cancella l'immagine dal Bucket Supabase
                     if photo_url:
                         delete_photo_from_storage(photo_url)
-                
-                    # 3. Cancella la riga dal Database
+
                     supabase.table("spese").delete().eq("id", int(record_id)).execute()
-                    
-                    st.warning("Record e relativa foto eliminati con successo!")
-                    st.rerun()
+                    st.warning("Record ed eventuale foto eliminati!")
+                    st.rerun()  # Forza il refresh dell'interfaccia
 
 # --- TAB 3: ESPORTAZIONE EXCEL ---
 with tab3:
