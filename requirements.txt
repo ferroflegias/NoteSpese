@@ -1,3 +1,5 @@
 streamlit
 openpyxl
 pillow
+pandas
+supabase
