@@ -3,3 +3,6 @@ openpyxl
 pillow
 pandas
 supabase
+reportlab
+opencv-python-headless
+requests
