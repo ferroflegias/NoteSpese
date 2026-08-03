@@ -256,7 +256,7 @@ with tab1:
 
             photo_path = save_uploaded_photo(uploaded_photo, d_str)
 
-            # Inserimento dati in Supabase
+# Inserimento dati in Supabase
             new_record = {
                 "data": d_str,
                 "destinazione": dest_input,
@@ -270,9 +270,15 @@ with tab1:
                 "valuta_straniera": 1 if is_foreign else 0
             }
 
-            supabase.table("spese").insert(new_record).execute()
-            st.success("Spesa salvata su Supabase!")
-            st.rerun()
+            try:
+                res = supabase.table("spese").insert(new_record).execute()
+                if res.data:
+                    st.success("Spesa salvata con successo su Supabase!")
+                    st.rerun()
+                else:
+                    st.error(f"Errore durante il salvataggio su Supabase. Risposta: {res}")
+            except Exception as e:
+                st.error(f"Eccezione durante il salvataggio: {e}")
 
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
