@@ -100,8 +100,7 @@ def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
                 file_options={"content-type": "image/jpeg"}
             )
 
-            public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
-            return public_url
+            return supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
 
         except Exception as e:
             st.error(f"Errore durante l'upload della foto su Supabase Storage: {e}")
@@ -109,14 +108,10 @@ def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
     return None
 
 def delete_photo_from_storage(public_url):
-    """Estragga lo storage_path dall'URL pubblico ed elimina il file dal Bucket."""
     if not public_url or not isinstance(public_url, str):
         return
     
     try:
-        # L'URL di Supabase ha questo formato:
-        # https://<project>.supabase.co/storage/v1/object/public/allegati-spese/default_user/2026-08/rec_...
-        # Dobbiamo isolare solo la parte dopo 'allegati-spese/': "default_user/2026-08/rec_..."
         target_token = f"{BUCKET_NAME}/"
         if target_token in public_url:
             storage_path = public_url.split(target_token)[-1]
@@ -140,10 +135,7 @@ def genera_excel(anno, modo, m_start, m_end):
         ws = wb[nome_foglio]
         
         start_date = f"{anno}-{m:02d}-01"
-        if m == 12:
-            end_date = f"{anno+1}-01-01"
-        else:
-            end_date = f"{anno}-{m+1:02d}-01"
+        end_date = f"{anno+1}-01-01" if m == 12 else f"{anno}-{m+1:02d}-01"
 
         response = supabase.table("spese") \
             .select("*") \
@@ -225,7 +217,7 @@ def genera_excel(anno, modo, m_start, m_end):
 # --- INTERFACCIA STREAMLIT ---
 st.title("🧾 Gestione Note Spese 2026")
 
-tab1, tab2, tab3 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Export Excel"])
+tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Report Spese", "📁 Export Excel"])
 
 # --- TAB 1: REGISTRAZIONE ---
 with tab1:
@@ -242,7 +234,7 @@ with tab1:
     st.write("**What (Categoria)**")
     cat_selection = st.radio(
         "Categoria",
-        options=["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "Altro"],
+        options=["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -263,7 +255,11 @@ with tab1:
         st.write("")
         is_foreign = st.checkbox("Non € (🔣)")
 
-    note_input = st.text_area("Notes", height=70)
+    # Campo note con gestione reset via Session State
+    if "input_note" not in st.session_state:
+        st.session_state["input_note"] = ""
+        
+    note_input = st.text_area("Notes", value=st.session_state["input_note"], height=70, key="note_widget")
     uploaded_photo = st.file_uploader("📷 Foto Scontrino", type=["jpg", "png", "jpeg"])
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
@@ -278,13 +274,14 @@ with tab1:
                 cat_key = "CARBURANTE_CC" if "CC" in pay_selection else "CARBURANTE_CARTA"
             elif "Telepass" in cat_selection:
                 cat_key = "TELEPASS"
+            elif "Nolo" in cat_selection:
+                cat_key = "NOLO"
             else:
                 cat_key = "ALTRO"
 
             metodo_str = "CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante")
             d_str = data_input.strftime("%Y-%m-%d")
 
-            # Salva la foto su Supabase Storage
             photo_url = save_uploaded_photo(uploaded_photo, d_str)
 
             new_record = {
@@ -301,14 +298,17 @@ with tab1:
             }
 
             supabase.table("spese").insert(new_record).execute()
+            
+            # Svuota solo il campo note per il prossimo inserimento
+            st.session_state["input_note"] = ""
+            
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
 
-# --- TAB 2: CONSULTAZIONE & MODIFICA ---
+# --- TAB 2: CONSULTAZIONE & MODIFICA (CON SELEZIONE RIGA) ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     
-    # Esegue sempre la query aggiornata al caricamento del Tab
     response = supabase.table("spese").select("*").order("data", desc=True).execute()
     data_list = response.data
 
@@ -317,22 +317,28 @@ with tab2:
     else:
         df_spese = pd.DataFrame(data_list)
         
-        # Mostra la tabella dati aggiornata
-        st.dataframe(
-            df_spese[['id', 'data', 'destinazione', 'scopo', 'categoria', 'metodo_pagamento', 'importo', 'valuta_straniera', 'note']],
-            use_container_width=True
-        )
+        st.write("💡 *Clicca su una riga della tabella per selezionarla e modificarla.*")
         
+        # Dataframe interattivo con selezione riga
+        event = st.dataframe(
+            df_spese[['id', 'data', 'destinazione', 'scopo', 'categoria', 'metodo_pagamento', 'importo', 'valuta_straniera', 'note']],
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+
         st.divider()
         st.subheader("Modifica / Elimina Spesa")
         
-        # Selettore record da modificare
-        record_id = st.number_input("Inserisci ID spesa da modificare/eliminare", min_value=1, step=1)
+        selected_rows = event.selection.rows if event and hasattr(event, 'selection') else []
         
-        row = df_spese[df_spese['id'] == record_id]
-        if not row.empty:
-            rec = row.iloc[0]
+        if selected_rows:
+            selected_index = selected_rows[0]
+            rec = df_spese.iloc[selected_index]
+            record_id = rec['id']
             
+            st.info(f"Stai modificando il record **ID #{record_id}** del {rec['data']}")
+
             with st.form("edit_form"):
                 e_data = st.date_input("Data", datetime.strptime(str(rec['data']), "%Y-%m-%d"))
                 e_dest = st.text_input("Destinazione", rec['destinazione'] or "")
@@ -366,7 +372,7 @@ with tab2:
                     }
                     supabase.table("spese").update(updated_record).eq("id", int(record_id)).execute()
                     st.success("Record aggiornato!")
-                    st.rerun()  # Forza il refresh dell'interfaccia
+                    st.rerun()
                     
                 if delete_mod:
                     photo_url = rec.get('allegato_path')
@@ -375,10 +381,62 @@ with tab2:
 
                     supabase.table("spese").delete().eq("id", int(record_id)).execute()
                     st.warning("Record ed eventuale foto eliminati!")
-                    st.rerun()  # Forza il refresh dell'interfaccia
+                    st.rerun()
+        else:
+            st.caption("👈 Seleziona una riga dalla tabella sopra per visualizzare il modulo di modifica.")
 
-# --- TAB 3: ESPORTAZIONE EXCEL ---
+# --- TAB 3: REPORTISTICA & RIEPILOGO ---
 with tab3:
+    st.subheader("📊 Riepilogo & Reportistica Spese")
+    
+    col_rep_year, col_rep_month = st.columns([1, 1])
+    with col_rep_year:
+        rep_year = st.number_input("Anno", value=2026, step=1, key="rep_year_input")
+    with col_rep_month:
+        rep_month = st.selectbox("Mese da analizzare", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
+        
+    start_d = f"{rep_year}-{rep_month:02d}-01"
+    end_d = f"{rep_year+1}-01-01" if rep_month == 12 else f"{rep_year}-{rep_month+1:02d}-01"
+    
+    rep_res = supabase.table("spese").select("*").gte("data", start_d).lt("data", end_d).execute()
+    rep_data = rep_res.data
+    
+    if not rep_data:
+        st.info(f"Nessuna spesa trovata per **{MANDI_NOMI[rep_month-1]} {rep_year}**.")
+    else:
+        df_rep = pd.DataFrame(rep_data)
+        
+        # Metriche principali
+        totale_mese = df_rep['importo'].sum()
+        spese_telepass = df_rep[df_rep['categoria'] == 'TELEPASS']['importo'].sum()
+        totale_senza_telepass = totale_mese - spese_telepass
+        num_spese = len(df_rep)
+
+        st.markdown(f"### Totali per **{MANDI_NOMI[rep_month-1]} {rep_year}**")
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Totale Generale", f"€ {totale_mese:.2f}")
+        m2.metric("Totale (Senza Telepass)", f"€ {totale_senza_telepass:.2f}")
+        m3.metric("Totale Telepass 🛣️", f"€ {spese_telepass:.2f}")
+        
+        st.divider()
+        
+        col_c1, col_c2 = st.columns(2)
+        
+        with col_c1:
+            st.markdown("#### Per Categoria")
+            cat_group = df_rep.groupby('categoria')['importo'].agg(['sum', 'count']).reset_index()
+            cat_group.columns = ['Categoria', 'Totale (€)', 'N. Spese']
+            st.dataframe(cat_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
+            
+        with col_c2:
+            st.markdown("#### Per Metodo Pagamento")
+            pay_group = df_rep.groupby('metodo_pagamento')['importo'].agg(['sum', 'count']).reset_index()
+            pay_group.columns = ['Metodo', 'Totale (€)', 'N. Spese']
+            st.dataframe(pay_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
+
+# --- TAB 4: ESPORTAZIONE EXCEL ---
+with tab4:
     st.subheader("Generazione Modello Excel 2026")
     
     anno_exp = st.number_input("Anno Esportazione", value=2026, step=1)
