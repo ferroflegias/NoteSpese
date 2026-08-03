@@ -108,6 +108,22 @@ def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
             return None
     return None
 
+def delete_photo_from_storage(public_url):
+    """Estragga lo storage_path dall'URL pubblico ed elimina il file dal Bucket."""
+    if not public_url or not isinstance(public_url, str):
+        return
+    
+    try:
+        # L'URL di Supabase ha questo formato:
+        # https://<project>.supabase.co/storage/v1/object/public/allegati-spese/default_user/2026-08/rec_...
+        # Dobbiamo isolare solo la parte dopo 'allegati-spese/': "default_user/2026-08/rec_..."
+        target_token = f"{BUCKET_NAME}/"
+        if target_token in public_url:
+            storage_path = public_url.split(target_token)[-1]
+            supabase.storage.from_(BUCKET_NAME).remove([storage_path])
+    except Exception as e:
+        st.warning(f"Impossibile eliminare l'immagine dallo Storage: {e}")
+
 def genera_excel(anno, modo, m_start, m_end):
     if not os.path.exists(EXCEL_TEMPLATE):
         st.error(f"File modello '{EXCEL_TEMPLATE}' non trovato!")
@@ -349,8 +365,17 @@ with tab2:
                     st.rerun()
                     
                 if delete_mod:
+                    # 1. Recupera l'URL della foto del record da eliminare
+                    photo_url = rec.get('allegato_path')
+                    
+                    # 2. Se presente, cancella l'immagine dal Bucket Supabase
+                    if photo_url:
+                        delete_photo_from_storage(photo_url)
+                
+                    # 3. Cancella la riga dal Database
                     supabase.table("spese").delete().eq("id", int(record_id)).execute()
-                    st.warning("Record eliminato!")
+                    
+                    st.warning("Record e relativa foto eliminati con successo!")
                     st.rerun()
 
 # --- TAB 3: ESPORTAZIONE EXCEL ---
