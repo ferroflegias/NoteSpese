@@ -1,11 +1,11 @@
 import os
-import sqlite3
 from datetime import datetime
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill
 from PIL import Image
 import streamlit as st
+from supabase import create_client, Client
 
 # --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
@@ -15,13 +15,12 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# --- SISTEMA DI LOGIN / AUTENTICAZIONE
+# --- SYSTEM LOGIN ---
 def check_password():
-    """Ritorna True se l'utente ha inserito la password corretta."""
     def password_entered():
         if st.session_state["password"] == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
-            del st.session_state["password"]  # Rimuove la password dalla memoria sessione
+            del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
 
@@ -35,12 +34,19 @@ def check_password():
     else:
         return True
 
-# Se la password non è corretta, lo script SI FERMA QUI e non mostra nulla sotto
 if not check_password():
     st.stop()
 
-# --- COSTANTI & DB ---
-DB_NAME = "note_spese.db"
+# --- CONNESSIONE SUPABASE ---
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = init_supabase()
+
+# --- COSTANTI ---
 ATTACHMENTS_DIR = "allegati"
 EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
 
@@ -76,34 +82,7 @@ FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 if not os.path.exists(ATTACHMENTS_DIR):
     os.makedirs(ATTACHMENTS_DIR)
 
-def get_db():
-    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spese (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data TEXT NOT NULL,
-            destinazione TEXT,
-            scopo TEXT,
-            categoria TEXT NOT NULL,
-            metodo_pagamento TEXT,
-            importo REAL NOT NULL,
-            km REAL,
-            note TEXT,
-            allegato_path TEXT,
-            valuta_straniera INTEGER DEFAULT 0
-        )
-    ''')
-    cursor.execute("PRAGMA table_info(spese)")
-    cols = [col[1] for col in cursor.fetchall()]
-    if 'valuta_straniera' not in cols:
-        cursor.execute("ALTER TABLE spese ADD COLUMN valuta_straniera INTEGER DEFAULT 0")
-    conn.commit()
-    return conn
-
-conn = get_db()
-
-# --- FUNZIONI UTILITY ---
+# --- UTILITY FOTO & EXCEL ---
 def save_uploaded_photo(uploaded_file, data_spesa):
     if uploaded_file is not None:
         now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -121,7 +100,6 @@ def genera_excel(anno, modo, m_start, m_end):
 
     wb = openpyxl.load_workbook(EXCEL_TEMPLATE)
     ROW_OFFSET = 5
-    cursor = conn.cursor()
 
     for m in range(m_start, m_end + 1):
         nome_foglio = MANDI_NOMI[m - 1]
@@ -129,15 +107,31 @@ def genera_excel(anno, modo, m_start, m_end):
             continue
 
         ws = wb[nome_foglio]
-        cursor.execute('''
-            SELECT data, destinazione, scopo, categoria, importo, km, note, valuta_straniera 
-            FROM spese 
-            WHERE strftime('%Y', data) = ? AND strftime('%m', data) = ?
-        ''', (str(anno), f"{m:02d}"))
-        spese = cursor.fetchall()
+        
+        # Filtro date per Supabase
+        start_date = f"{anno}-{m:02d}-01"
+        if m == 12:
+            end_date = f"{anno+1}-01-01"
+        else:
+            end_date = f"{anno}-{m+1:02d}-01"
+
+        response = supabase.table("spese") \
+            .select("*") \
+            .gte("data", start_date) \
+            .lt("data", end_date) \
+            .execute()
+        
+        spese = response.data
 
         for spesa in spese:
-            d_str, dest, scopo, cat_key, imp, km, note, is_foreign = spesa
+            d_str = spesa["data"]
+            dest = spesa.get("destinazione")
+            scopo = spesa.get("scopo")
+            cat_key = spesa.get("categoria")
+            imp = spesa.get("importo", 0.0)
+            note = spesa.get("note")
+            is_foreign = spesa.get("valuta_straniera", 0)
+
             dt = datetime.strptime(d_str, "%Y-%m-%d")
             giorno = dt.day
             target_row = giorno + ROW_OFFSET
@@ -171,7 +165,7 @@ def genera_excel(anno, modo, m_start, m_end):
 
             col_idx = CATEGORIA_COLONNA.get(cat_key)
             if col_idx and imp:
-                imp_val = round(imp, 2)
+                imp_val = round(float(imp), 2)
                 cell = ws.cell(row=target_row, column=col_idx)
                 curr_val = cell.value
 
@@ -198,7 +192,7 @@ def genera_excel(anno, modo, m_start, m_end):
     wb.save(output_filename)
     return output_filename
 
-# --- APPLICAZIONE INTERFACCIA WEB (TAB) ---
+# --- INTERFACCIA STREAMLIT ---
 st.title("🧾 Gestione Note Spese 2026")
 
 tab1, tab2, tab3 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Export Excel"])
@@ -240,15 +234,12 @@ with tab1:
         is_foreign = st.checkbox("Non € (🔣)")
 
     note_input = st.text_area("Notes", height=70)
-    
-    # Upload Foto o Scatto da Fotocamera
     uploaded_photo = st.file_uploader("📷 Foto Scontrino", type=["jpg", "png", "jpeg"])
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
         if importo_input <= 0 and "Telepass" not in cat_selection:
             st.warning("Inserisci un importo valido!")
         else:
-            # Mappatura categorie
             if "Bar" in cat_selection:
                 cat_key = "RISTORANTI_CC" if "CC" in pay_selection else "RISTORANTI_CONTANTI"
             elif "Parcheggio" in cat_selection:
@@ -265,24 +256,35 @@ with tab1:
 
             photo_path = save_uploaded_photo(uploaded_photo, d_str)
 
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO spese (data, destinazione, scopo, categoria, metodo_pagamento, importo, km, note, allegato_path, valuta_straniera)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (d_str, dest_input, scopo_input, cat_key, metodo_str, importo_input, 0.0, note_input, photo_path, 1 if is_foreign else 0))
-            conn.commit()
-            st.success("Spesa salvata correttamente!")
+            # Inserimento dati in Supabase
+            new_record = {
+                "data": d_str,
+                "destinazione": dest_input,
+                "scopo": scopo_input,
+                "categoria": cat_key,
+                "metodo_pagamento": metodo_str,
+                "importo": importo_input,
+                "km": 0.0,
+                "note": note_input,
+                "allegato_path": photo_path,
+                "valuta_straniera": 1 if is_foreign else 0
+            }
+
+            supabase.table("spese").insert(new_record).execute()
+            st.success("Spesa salvata su Supabase!")
             st.rerun()
 
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     
-    df_spese = pd.read_sql_query("SELECT * FROM spese ORDER BY data DESC", conn)
-    
-    if df_spese.empty:
+    response = supabase.table("spese").select("*").order("data", desc=True).execute()
+    data_list = response.data
+
+    if not data_list:
         st.info("Nessuna spesa memorizzata nel database.")
     else:
+        df_spese = pd.DataFrame(data_list)
         st.dataframe(
             df_spese[['id', 'data', 'destinazione', 'scopo', 'categoria', 'metodo_pagamento', 'importo', 'valuta_straniera', 'note']],
             use_container_width=True
@@ -298,7 +300,7 @@ with tab2:
             rec = row.iloc[0]
             
             with st.form("edit_form"):
-                e_data = st.date_input("Data", datetime.strptime(rec['data'], "%Y-%m-%d"))
+                e_data = st.date_input("Data", datetime.strptime(str(rec['data']), "%Y-%m-%d"))
                 e_dest = st.text_input("Destinazione", rec['destinazione'] or "")
                 e_scopo = st.text_input("Scopo", rec['scopo'] or "")
                 e_cat = st.selectbox("Categoria DB", CATEGORIE_LISTA, index=CATEGORIE_LISTA.index(rec['categoria']) if rec['categoria'] in CATEGORIE_LISTA else 8)
@@ -307,7 +309,6 @@ with tab2:
                 e_foreign = st.checkbox("Valuta non-€ (🔣)", value=bool(rec['valuta_straniera']))
                 e_note = st.text_area("Note", rec['note'] or "")
 
-                # Controllo anti-crash su allegato_path
                 allegato = rec['allegato_path']
                 if isinstance(allegato, str) and allegato.strip() and os.path.exists(allegato):
                     st.image(allegato, caption="Allegato attuale", width=250)
@@ -319,23 +320,25 @@ with tab2:
                     delete_mod = st.form_submit_button("🗑️ Elimina Record", type="secondary")
                 
                 if save_mod:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        UPDATE spese 
-                        SET data=?, destinazione=?, scopo=?, categoria=?, metodo_pagamento=?, importo=?, note=?, valuta_straniera=?
-                        WHERE id=?
-                    ''', (e_data.strftime("%Y-%m-%d"), e_dest, e_scopo, e_cat, e_pay, e_imp, e_note, 1 if e_foreign else 0, int(record_id)))
-                    conn.commit()
+                    updated_record = {
+                        "data": e_data.strftime("%Y-%m-%d"),
+                        "destinazione": e_dest,
+                        "scopo": e_scopo,
+                        "categoria": e_cat,
+                        "metodo_pagamento": e_pay,
+                        "importo": e_imp,
+                        "note": e_note,
+                        "valuta_straniera": 1 if e_foreign else 0
+                    }
+                    supabase.table("spese").update(updated_record).eq("id", int(record_id)).execute()
                     st.success("Record aggiornato!")
                     st.rerun()
                     
                 if delete_mod:
-                    cursor = conn.cursor()
-                    cursor.execute("DELETE FROM spese WHERE id=?", (int(record_id),))
-                    conn.commit()
+                    supabase.table("spese").delete().eq("id", int(record_id)).execute()
                     st.warning("Record eliminato!")
                     st.rerun()
-                    
+
 # --- TAB 3: ESPORTAZIONE EXCEL ---
 with tab3:
     st.subheader("Generazione Modello Excel 2026")
