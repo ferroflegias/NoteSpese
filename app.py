@@ -9,6 +9,30 @@ import streamlit as st
 
 # --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
+    def check_password():
+    """Ritorna True se l'utente ha inserito la password corretta."""
+    def password_entered():
+        if st.session_state["password"] == st.secrets["PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Non salviamo la password in memoria
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # Primo accesso: mostra l'input per la password
+        st.text_input("🔑 Inserisci la Password di accesso", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        # Password errata
+        st.text_input("🔑 Inserisci la Password di accesso", type="password", on_change=password_entered, key="password")
+        st.error("😕 Password errata")
+        return False
+    else:
+        # Password corretta
+        return True
+        
+if not check_password():
+    st.stop()  # Ferma l'esecuzione dell'app finché la password non è corretta
     page_title="Note Spese 2026",
     page_icon="🧾",
     layout="centered",
