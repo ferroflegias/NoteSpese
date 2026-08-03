@@ -234,7 +234,7 @@ with tab1:
     st.write("**What (Categoria)**")
     cat_selection = st.radio(
         "Categoria",
-        options=["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
+        options=["🍽️ Bar/Rist/Alb", "🅿️ Parc/Taxi/Aereo", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -406,18 +406,29 @@ with tab3:
     else:
         df_rep = pd.DataFrame(rep_data)
         
-        # Metriche principali
+        # 1. Totale Generale
         totale_mese = df_rep['importo'].sum()
+        
+        # 2. Singoli totali esclusi
         spese_telepass = df_rep[df_rep['categoria'] == 'TELEPASS']['importo'].sum()
+        spese_carb_carta = df_rep[df_rep['categoria'] == 'CARBURANTE_CARTA']['importo'].sum()
+        
+        # 3. Totali ricalcolati
         totale_senza_telepass = totale_mese - spese_telepass
-        num_spese = len(df_rep)
+        totale_senza_telepass_e_carb = totale_mese - spese_telepass - spese_carb_carta
 
         st.markdown(f"### Totali per **{MANDI_NOMI[rep_month-1]} {rep_year}**")
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Totale Generale", f"€ {totale_mese:.2f}")
+        # Prima riga di metriche principali
+        m1, m2 = st.columns(2)
+        m1.metric("Totale Generale Mese", f"€ {totale_mese:.2f}")
         m2.metric("Totale (Senza Telepass)", f"€ {totale_senza_telepass:.2f}")
-        m3.metric("Totale Telepass 🛣️", f"€ {spese_telepass:.2f}")
+        
+        # Seconda riga di dettaglio / esclusioni
+        m3, m4, m5 = st.columns(3)
+        m3.metric("Totale (Senza Telepass & Carta Carb.) 💶💳", f"€ {totale_senza_telepass_e_carb:.2f}")
+        m4.metric("Totale Telepass 🛣️", f"€ {spese_telepass:.2f}")
+        m5.metric("Totale Carta Carburante 📄⛽", f"€ {spese_carb_carta:.2f}")
         
         st.divider()
         
