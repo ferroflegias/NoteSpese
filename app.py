@@ -239,13 +239,20 @@ with tab1:
         label_visibility="collapsed"
     )
 
-    st.write("**Payment (Metodo Pagamento)**")
-    pay_selection = st.radio(
-        "Pagamento",
-        options=["💳 CC", "💶 Contanti", "📄⛽ Carta Carburante"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
+    # Gestione dinamica pagamento (Telepass omesso)
+    is_telepass = "Telepass" in cat_selection
+    
+    if not is_telepass:
+        st.write("**Payment (Metodo Pagamento)**")
+        pay_selection = st.radio(
+            "Pagamento",
+            options=["💳 CC", "💶 Contanti", "📄⛽ Carta Carburante"],
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+    else:
+        pay_selection = None
+        st.info("ℹ️ Per il Telepass il metodo di pagamento viene omesso.")
 
     col_imp, col_curr = st.columns([2, 1])
     with col_imp:
@@ -255,7 +262,6 @@ with tab1:
         st.write("")
         is_foreign = st.checkbox("Non € (🔣)")
 
-    # Campo note con gestione reset via Session State
     if "input_note" not in st.session_state:
         st.session_state["input_note"] = ""
         
@@ -263,7 +269,7 @@ with tab1:
     uploaded_photo = st.file_uploader("📷 Foto Scontrino", type=["jpg", "png", "jpeg"])
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
-        if importo_input <= 0 and "Telepass" not in cat_selection:
+        if importo_input <= 0 and not is_telepass:
             st.warning("Inserisci un importo valido!")
         else:
             if "Bar" in cat_selection:
@@ -279,9 +285,12 @@ with tab1:
             else:
                 cat_key = "ALTRO"
 
-            metodo_str = "CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante")
-            d_str = data_input.strftime("%Y-%m-%d")
+            if cat_key == "TELEPASS":
+                metodo_str = None
+            else:
+                metodo_str = "CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante")
 
+            d_str = data_input.strftime("%Y-%m-%d")
             photo_url = save_uploaded_photo(uploaded_photo, d_str)
 
             new_record = {
@@ -298,14 +307,12 @@ with tab1:
             }
 
             supabase.table("spese").insert(new_record).execute()
-            
-            # Svuota solo il campo note per il prossimo inserimento
             st.session_state["input_note"] = ""
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
 
-# --- TAB 2: CONSULTAZIONE & MODIFICA (CON SELEZIONE RIGA) ---
+# --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     
@@ -319,7 +326,6 @@ with tab2:
         
         st.write("💡 *Clicca su una riga della tabella per selezionarla e modificarla.*")
         
-        # Dataframe interattivo con selezione riga
         event = st.dataframe(
             df_spese[['id', 'data', 'destinazione', 'scopo', 'categoria', 'metodo_pagamento', 'importo', 'valuta_straniera', 'note']],
             use_container_width=True,
@@ -344,7 +350,13 @@ with tab2:
                 e_dest = st.text_input("Destinazione", rec['destinazione'] or "")
                 e_scopo = st.text_input("Scopo", rec['scopo'] or "")
                 e_cat = st.selectbox("Categoria DB", CATEGORIE_LISTA, index=CATEGORIE_LISTA.index(rec['categoria']) if rec['categoria'] in CATEGORIE_LISTA else 8)
-                e_pay = st.selectbox("Pagamento", PAGAMENTI_LISTA, index=PAGAMENTI_LISTA.index(rec['metodo_pagamento']) if rec['metodo_pagamento'] in PAGAMENTI_LISTA else 0)
+                
+                # Permette metodo di pagamento vuoto/omesso per Telepass
+                PAGAMENTI_EDIT_LISTA = ["- (Nessuno)"] + PAGAMENTI_LISTA
+                curr_pay_val = rec['metodo_pagamento']
+                curr_pay_idx = PAGAMENTI_LISTA.index(curr_pay_val) + 1 if curr_pay_val in PAGAMENTI_LISTA else 0
+
+                e_pay = st.selectbox("Pagamento", PAGAMENTI_EDIT_LISTA, index=curr_pay_idx)
                 e_imp = st.number_input("Importo (€)", value=float(rec['importo']), step=0.5)
                 e_foreign = st.checkbox("Valuta non-€ (🔣)", value=bool(rec['valuta_straniera']))
                 e_note = st.text_area("Note", rec['note'] or "")
@@ -365,7 +377,7 @@ with tab2:
                         "destinazione": e_dest,
                         "scopo": e_scopo,
                         "categoria": e_cat,
-                        "metodo_pagamento": e_pay,
+                        "metodo_pagamento": None if e_pay == "- (Nessuno)" else e_pay,
                         "importo": e_imp,
                         "note": e_note,
                         "valuta_straniera": 1 if e_foreign else 0
@@ -406,25 +418,19 @@ with tab3:
     else:
         df_rep = pd.DataFrame(rep_data)
         
-        # 1. Totale Generale
         totale_mese = df_rep['importo'].sum()
-        
-        # 2. Singoli totali esclusi
         spese_telepass = df_rep[df_rep['categoria'] == 'TELEPASS']['importo'].sum()
         spese_carb_carta = df_rep[df_rep['categoria'] == 'CARBURANTE_CARTA']['importo'].sum()
         
-        # 3. Totali ricalcolati
         totale_senza_telepass = totale_mese - spese_telepass
         totale_senza_telepass_e_carb = totale_mese - spese_telepass - spese_carb_carta
 
         st.markdown(f"### Totali per **{MANDI_NOMI[rep_month-1]} {rep_year}**")
         
-        # Prima riga di metriche principali
         m1, m2 = st.columns(2)
         m1.metric("Totale Generale Mese", f"€ {totale_mese:.2f}")
         m2.metric("Totale (Senza Telepass)", f"€ {totale_senza_telepass:.2f}")
         
-        # Seconda riga di dettaglio / esclusioni
         m3, m4, m5 = st.columns(3)
         m3.metric("Totale (Senza Telepass & Carta Carb.) 💶💳", f"€ {totale_senza_telepass_e_carb:.2f}")
         m4.metric("Totale Telepass 🛣️", f"€ {spese_telepass:.2f}")
@@ -442,7 +448,9 @@ with tab3:
             
         with col_c2:
             st.markdown("#### Per Metodo Pagamento")
-            pay_group = df_rep.groupby('metodo_pagamento')['importo'].agg(['sum', 'count']).reset_index()
+            df_rep_pay = df_rep.copy()
+            df_rep_pay['metodo_pagamento'] = df_rep_pay['metodo_pagamento'].fillna('- (Nessuno/Telepass)')
+            pay_group = df_rep_pay.groupby('metodo_pagamento')['importo'].agg(['sum', 'count']).reset_index()
             pay_group.columns = ['Metodo', 'Totale (€)', 'N. Spese']
             st.dataframe(pay_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
 
