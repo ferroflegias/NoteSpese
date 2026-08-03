@@ -1,4 +1,5 @@
 import os
+import io
 from datetime import datetime
 import pandas as pd
 import openpyxl
@@ -17,17 +18,15 @@ st.set_page_config(
 
 # --- SYSTEM LOGIN ---
 def check_password():
-    """Ritorna True se l'utente ha inserito la password corretta."""
     if st.session_state.get("password_correct", False):
         return True
 
-    # Mostra l'input per la password
     pwd_input = st.text_input("🔑 Inserisci la Password di accesso", type="password")
     
     if pwd_input:
         if pwd_input == st.secrets["PASSWORD"]:
             st.session_state["password_correct"] = True
-            st.rerun()  # Ricarica la pagina sbloccando l'app
+            st.rerun()
         else:
             st.error("😕 Password errata")
             return False
@@ -47,7 +46,7 @@ def init_supabase() -> Client:
 supabase = init_supabase()
 
 # --- COSTANTI ---
-ATTACHMENTS_DIR = "allegati"
+BUCKET_NAME = "allegati-spese"
 EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
 
 MANDI_NOMI = [
@@ -79,18 +78,34 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-if not os.path.exists(ATTACHMENTS_DIR):
-    os.makedirs(ATTACHMENTS_DIR)
-
-# --- UTILITY FOTO & EXCEL ---
-def save_uploaded_photo(uploaded_file, data_spesa):
+# --- UTILITY UPLOAD STORAGE & EXCEL ---
+def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
     if uploaded_file is not None:
-        now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"rec_{data_spesa}_{now_str}.jpg"
-        save_path = os.path.join(ATTACHMENTS_DIR, filename)
-        img = Image.open(uploaded_file)
-        img.convert('RGB').save(save_path, "JPEG")
-        return save_path
+        try:
+            dt = datetime.strptime(data_spesa, "%Y-%m-%d")
+            anno_mese = dt.strftime("%Y-%m")
+            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+            
+            filename = f"rec_{data_spesa}_{now_str}.jpg"
+            storage_path = f"{user_id}/{anno_mese}/{filename}"
+
+            img = Image.open(uploaded_file)
+            img_byte_arr = io.BytesIO()
+            img.convert('RGB').save(img_byte_arr, format='JPEG')
+            file_bytes = img_byte_arr.getvalue()
+
+            supabase.storage.from_(BUCKET_NAME).upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={"content-type": "image/jpeg"}
+            )
+
+            public_url = supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
+            return public_url
+
+        except Exception as e:
+            st.error(f"Errore durante l'upload della foto su Supabase Storage: {e}")
+            return None
     return None
 
 def genera_excel(anno, modo, m_start, m_end):
@@ -108,7 +123,6 @@ def genera_excel(anno, modo, m_start, m_end):
 
         ws = wb[nome_foglio]
         
-        # Filtro date per Supabase
         start_date = f"{anno}-{m:02d}-01"
         if m == 12:
             end_date = f"{anno+1}-01-01"
@@ -254,9 +268,9 @@ with tab1:
             metodo_str = "CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante")
             d_str = data_input.strftime("%Y-%m-%d")
 
-            photo_path = save_uploaded_photo(uploaded_photo, d_str)
+            # Salva la foto su Supabase Storage
+            photo_url = save_uploaded_photo(uploaded_photo, d_str)
 
-# Inserimento dati in Supabase
             new_record = {
                 "data": d_str,
                 "destinazione": dest_input,
@@ -266,19 +280,13 @@ with tab1:
                 "importo": importo_input,
                 "km": 0.0,
                 "note": note_input,
-                "allegato_path": photo_path,
+                "allegato_path": photo_url,
                 "valuta_straniera": 1 if is_foreign else 0
             }
 
-            try:
-                res = supabase.table("spese").insert(new_record).execute()
-                if res.data:
-                    st.success("Spesa salvata con successo su Supabase!")
-                    st.rerun()
-                else:
-                    st.error(f"Errore durante il salvataggio su Supabase. Risposta: {res}")
-            except Exception as e:
-                st.error(f"Eccezione durante il salvataggio: {e}")
+            supabase.table("spese").insert(new_record).execute()
+            st.success("Spesa e allegato salvati con successo su Supabase!")
+            st.rerun()
 
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
@@ -316,8 +324,8 @@ with tab2:
                 e_note = st.text_area("Note", rec['note'] or "")
 
                 allegato = rec['allegato_path']
-                if isinstance(allegato, str) and allegato.strip() and os.path.exists(allegato):
-                    st.image(allegato, caption="Allegato attuale", width=250)
+                if isinstance(allegato, str) and allegato.startswith("http"):
+                    st.image(allegato, caption="Allegato foto", width=250)
                 
                 c_sub, c_del = st.columns([1, 1])
                 with c_sub:
