@@ -283,8 +283,10 @@ with tab2:
                 e_foreign = st.checkbox("Valuta non-€ (🔣)", value=bool(rec['valuta_straniera']))
                 e_note = st.text_area("Note", rec['note'] or "")
 
-                if rec['allegato_path'] and os.path.exists(rec['allegato_path']):
-                    st.image(rec['allegato_path'], caption="Allegato attuale", width=250)
+                # Controllo anti-crash su allegato_path
+                allegato = rec['allegato_path']
+                if isinstance(allegato, str) and allegato.strip() and os.path.exists(allegato):
+                    st.image(allegato, caption="Allegato attuale", width=250)
                 
                 c_sub, c_del = st.columns([1, 1])
                 with c_sub:
@@ -309,7 +311,7 @@ with tab2:
                     conn.commit()
                     st.warning("Record eliminato!")
                     st.rerun()
-
+                    
 # --- TAB 3: ESPORTAZIONE EXCEL ---
 with tab3:
     st.subheader("Generazione Modello Excel 2026")
