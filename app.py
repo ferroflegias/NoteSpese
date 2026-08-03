@@ -1,12 +1,21 @@
 import os
 import io
 from datetime import datetime
+import requests
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill
 from PIL import Image
+import cv2
+import numpy as np
 import streamlit as st
 from supabase import create_client, Client
+
+# ReportLab imports per PDF
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
 
 # --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
@@ -78,7 +87,7 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-# --- UTILITY UPLOAD STORAGE & EXCEL ---
+# --- UTILITY FOTO & AUTO-CROP OPENCV ---
 def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
     if uploaded_file is not None:
         try:
@@ -110,7 +119,6 @@ def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
 def delete_photo_from_storage(public_url):
     if not public_url or not isinstance(public_url, str):
         return
-    
     try:
         target_token = f"{BUCKET_NAME}/"
         if target_token in public_url:
@@ -119,6 +127,66 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare l'immagine dallo Storage: {e}")
 
+def crop_receipt_image(image_bytes):
+    """Rileva i contorni dello scontrino tramite OpenCV e ritaglia solo la ricevuta."""
+    try:
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return image_bytes
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edged = cv2.Canny(blur, 75, 200)
+
+        contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        receipt_cnt = None
+        for c in contours:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4:
+                receipt_cnt = approx
+                break
+
+        if receipt_cnt is not None:
+            pts = receipt_cnt.reshape(4, 2)
+            rect = np.zeros((4, 2), dtype="float32")
+            s = pts.sum(axis=1)
+            rect[0] = pts[np.argmin(s)]
+            rect[2] = pts[np.argmax(s)]
+            diff = np.diff(pts, axis=1)
+            rect[1] = pts[np.argmin(diff)]
+            rect[3] = pts[np.argmax(diff)]
+
+            (tl, tr, br, bl) = rect
+            widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+            widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+            maxWidth = max(int(widthA), int(widthB))
+
+            heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+            heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+            maxHeight = max(int(heightA), int(heightB))
+
+            dst = np.array([
+                [0, 0],
+                [maxWidth - 1, 0],
+                [maxWidth - 1, maxHeight - 1],
+                [0, maxHeight - 1]], dtype="float32")
+
+            M = cv2.getPerspectiveTransform(rect, dst)
+            warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
+
+            is_success, buffer = cv2.imencode(".jpg", warped)
+            if is_success:
+                return buffer.tobytes()
+    except Exception:
+        pass
+    
+    return image_bytes
+
+# --- GENERAZIONE GENERATORI (EXCEL & PDF) ---
 def genera_excel(anno, modo, m_start, m_end):
     if not os.path.exists(EXCEL_TEMPLATE):
         st.error(f"File modello '{EXCEL_TEMPLATE}' non trovato!")
@@ -133,7 +201,6 @@ def genera_excel(anno, modo, m_start, m_end):
             continue
 
         ws = wb[nome_foglio]
-        
         start_date = f"{anno}-{m:02d}-01"
         end_date = f"{anno+1}-01-01" if m == 12 else f"{anno}-{m+1:02d}-01"
 
@@ -214,10 +281,117 @@ def genera_excel(anno, modo, m_start, m_end):
     wb.save(output_filename)
     return output_filename
 
+def genera_pdf_allegati(anno, mese, auto_crop=True):
+    start_date = f"{anno}-{mese:02d}-01"
+    end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
+
+    # Ordinamento per data ASC e sotto-ordinamento per id ASC
+    response = supabase.table("spese") \
+        .select("*") \
+        .gte("data", start_date) \
+        .lt("data", end_date) \
+        .order("data", desc=False) \
+        .order("id", desc=False) \
+        .execute()
+        
+    spese = [s for s in response.data if s.get("allegato_path")]
+
+    if not spese:
+        return None
+
+    pdf_filename = f"Allegati_Scontrini_{MANDI_NOMI[mese-1]}_{anno}.pdf"
+    doc = SimpleDocTemplate(
+        pdf_filename,
+        pagesize=A4,
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1)
+    card_title_style = ParagraphStyle('CardTitle', parent=styles['Normal'], fontSize=9, leading=11, fontName="Helvetica-Bold", textColor=colors.navy)
+    card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
+
+    story = []
+    story.append(Paragraph(f"<b>Allegati Scontrini - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Spacer(1, 15))
+
+    cells = []
+    
+    for spesa in spese:
+        url = spesa["allegato_path"]
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                img_data = resp.content
+                if auto_crop:
+                    img_data = crop_receipt_image(img_data)
+
+                img_stream = io.BytesIO(img_data)
+                pil_img = Image.open(img_stream)
+                
+                # Ridimensiona mantenendo le proporzioni (Max W: 250pt, H: 280pt)
+                max_w, max_h = 240, 260
+                w, h = pil_img.size
+                ratio = min(max_w / w, max_h / h)
+                final_w, final_h = int(w * ratio), int(h * ratio)
+
+                img_stream.seek(0)
+                rl_img = RLImage(img_stream, width=final_w, height=final_h)
+
+                d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                dest = spesa.get('destinazione') or '-'
+                cat = spesa.get('categoria') or '-'
+                imp = f"€ {spesa.get('importo', 0.0):.2f}"
+                note = spesa.get('note') or ''
+
+                text_content = f"""
+                <b>Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
+                <b>Destinazione:</b> {dest}<br/>
+                <b>Cat:</b> {cat}<br/>
+                """
+                if note:
+                    text_content += f"<b>Note:</b> {note}"
+
+                cell_elements = [
+                    Paragraph(text_content, card_body_style),
+                    Spacer(1, 4),
+                    rl_img
+                ]
+
+                cells.append(cell_elements)
+
+        except Exception as e:
+            continue
+
+    # Organizzazione in griglia a 2 colonne
+    grid_data = []
+    for i in range(0, len(cells), 2):
+        row = [cells[i]]
+        if i + 1 < len(cells):
+            row.append(cells[i+1])
+        else:
+            row.append("")
+        grid_data.append(row)
+
+    if grid_data:
+        t = Table(grid_data, colWidths=[275, 275])
+        t.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ]))
+        story.append(t)
+
+    doc.build(story)
+    return pdf_filename
+
 # --- INTERFACCIA STREAMLIT ---
 st.title("🧾 Gestione Note Spese 2026")
 
-tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Report Spese", "📁 Export Excel"])
+tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Report Spese", "📁 Export Excel & PDF"])
 
 # --- TAB 1: REGISTRAZIONE ---
 with tab1:
@@ -239,7 +413,6 @@ with tab1:
         label_visibility="collapsed"
     )
 
-    # Gestione dinamica pagamento (Telepass omesso)
     is_telepass = "Telepass" in cat_selection
     
     if not is_telepass:
@@ -351,7 +524,6 @@ with tab2:
                 e_scopo = st.text_input("Scopo", rec['scopo'] or "")
                 e_cat = st.selectbox("Categoria DB", CATEGORIE_LISTA, index=CATEGORIE_LISTA.index(rec['categoria']) if rec['categoria'] in CATEGORIE_LISTA else 8)
                 
-                # Permette metodo di pagamento vuoto/omesso per Telepass
                 PAGAMENTI_EDIT_LISTA = ["- (Nessuno)"] + PAGAMENTI_LISTA
                 curr_pay_val = rec['metodo_pagamento']
                 curr_pay_idx = PAGAMENTI_LISTA.index(curr_pay_val) + 1 if curr_pay_val in PAGAMENTI_LISTA else 0
@@ -454,35 +626,64 @@ with tab3:
             pay_group.columns = ['Metodo', 'Totale (€)', 'N. Spese']
             st.dataframe(pay_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
 
-# --- TAB 4: ESPORTAZIONE EXCEL ---
+# --- TAB 4: ESPORTAZIONE EXCEL & PDF ALLEGATI ---
 with tab4:
-    st.subheader("Generazione Modello Excel 2026")
+    st.subheader("📁 Generazione Documenti (Excel & PDF)")
     
-    anno_exp = st.number_input("Anno Esportazione", value=2026, step=1)
-    tipo_exp = st.selectbox("Modalità Esportazione", ["Mese Singolo", "Range di Mesi", "Anno Completo"])
-    
-    if tipo_exp == "Mese Singolo":
-        m_sel = st.selectbox("Seleziona Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1])
-        m_in, m_fi = m_sel, m_sel
-        modo_str = 'singolo'
-    elif tipo_exp == "Range di Mesi":
-        col_m1, col_m2 = st.columns(2)
-        with col_m1:
-            m_in = st.selectbox("Mese Inizio", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1])
-        with col_m2:
-            m_fi = st.selectbox("Mese Fine", range(1, 13), index=11, format_func=lambda x: MANDI_NOMI[x-1])
-        modo_str = 'range'
-    else:
-        m_in, m_fi = 1, 12
-        modo_str = 'anno'
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        anno_exp = st.number_input("Anno Esportazione", value=2026, step=1)
+    with col_e2:
+        mese_exp = st.selectbox("Mese Esportazione", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
 
-    if st.button("📊 Genera e Scarica Excel", type="primary"):
-        res_file = genera_excel(anno_exp, modo_str, m_in, m_fi)
-        if res_file and os.path.exists(res_file):
-            with open(res_file, "rb") as f:
-                st.download_button(
-                    label="📥 Scarica File Excel Generato",
-                    data=f,
-                    file_name=res_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    st.divider()
+
+    col_btn1, col_btn2 = st.columns(2)
+
+    # 1. GENERAZIONE EXCEL
+    with col_btn1:
+        st.markdown("#### 📊 Modello Excel")
+        tipo_exp = st.selectbox("Modalità Excel", ["Mese Singolo", "Range di Mesi", "Anno Completo"])
+        
+        if tipo_exp == "Mese Singolo":
+            m_in, m_fi = mese_exp, mese_exp
+            modo_str = 'singolo'
+        elif tipo_exp == "Range di Mesi":
+            m_in, m_fi = 1, mese_exp
+            modo_str = 'range'
+        else:
+            m_in, m_fi = 1, 12
+            modo_str = 'anno'
+
+        if st.button("📊 Genera Excel", type="primary", use_container_width=True):
+            res_file = genera_excel(anno_exp, modo_str, m_in, m_fi)
+            if res_file and os.path.exists(res_file):
+                with open(res_file, "rb") as f:
+                    st.download_button(
+                        label="📥 Scarica Excel",
+                        data=f,
+                        file_name=res_file,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
+    # 2. GENERAZIONE PDF ALLEGATI
+    with col_btn2:
+        st.markdown("#### 🖼️ PDF Allegati Scontrini")
+        use_crop = st.checkbox("✂️ Ritaglia scontrini con AI/OpenCV", value=True)
+        
+        if st.button("🖼️ Genera PDF Allegati", type="primary", use_container_width=True):
+            with st.spinner("Scarico e processamento immagini in corso..."):
+                pdf_res = genera_pdf_allegati(anno_exp, mese_exp, auto_crop=use_crop)
+                
+            if pdf_res and os.path.exists(pdf_res):
+                with open(pdf_res, "rb") as f_pdf:
+                    st.download_button(
+                        label="📥 Scarica PDF Scontrini",
+                        data=f_pdf,
+                        file_name=pdf_res,
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            else:
+                st.warning("Nessuna foto allegato trovata per il mese selezionato.")
