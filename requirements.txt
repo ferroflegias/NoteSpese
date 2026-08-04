@@ -6,3 +6,5 @@ supabase
 reportlab
 opencv-python-headless
 requests
+pypdf
+pdf2image
