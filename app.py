@@ -5,9 +5,7 @@ import requests
 import pandas as pd
 import openpyxl
 from openpyxl.styles import PatternFill
-from PIL import Image
-import cv2
-import numpy as np
+from PIL import Image, ImageOps
 import streamlit as st
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
@@ -89,66 +87,28 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-# --- UTILITY OPENCV & FILE STORAGE ---
+# --- UTILITY FOTO OTTIMIZZATE & FILE STORAGE ---
 
-def crop_receipt_image(image_bytes):
-    """Rileva i contorni dello scontrino tramite OpenCV e ritaglia solo la ricevuta."""
+def optimize_image(image_bytes, max_dimension=1600, quality=75):
+    """Corregge l'orientamento EXIF, ridimensiona la foto ed applica una compressione JPEG ottimizzata."""
     try:
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is None:
-            return image_bytes
+        img = Image.open(io.BytesIO(image_bytes))
+        # Corregge la rotazione automatica degli smartphone
+        img = ImageOps.exif_transpose(img)
+        img = img.convert("RGB")
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edged = cv2.Canny(blur, 75, 200)
+        # Ridimensiona se la dimensione supera max_dimension
+        w, h = img.size
+        if max(w, h) > max_dimension:
+            ratio = max_dimension / float(max(w, h))
+            new_size = (int(w * ratio), int(h * ratio))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
 
-        contours, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-        receipt_cnt = None
-        for c in contours:
-            peri = cv2.arcLength(c, True)
-            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-            if len(approx) == 4:
-                receipt_cnt = approx
-                break
-
-        if receipt_cnt is not None:
-            pts = receipt_cnt.reshape(4, 2)
-            rect = np.zeros((4, 2), dtype="float32")
-            s = pts.sum(axis=1)
-            rect[0] = pts[np.argmin(s)]
-            rect[2] = pts[np.argmax(s)]
-            diff = np.diff(pts, axis=1)
-            rect[1] = pts[np.argmin(diff)]
-            rect[3] = pts[np.argmax(diff)]
-
-            (tl, tr, br, bl) = rect
-            widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
-            widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
-            maxWidth = max(int(widthA), int(widthB))
-
-            heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
-            heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
-            maxHeight = max(int(heightA), int(heightB))
-
-            dst = np.array([
-                [0, 0],
-                [maxWidth - 1, 0],
-                [maxWidth - 1, maxHeight - 1],
-                [0, maxHeight - 1]], dtype="float32")
-
-            M = cv2.getPerspectiveTransform(rect, dst)
-            warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
-
-            is_success, buffer = cv2.imencode(".jpg", warped)
-            if is_success:
-                return buffer.tobytes()
+        out_buffer = io.BytesIO()
+        img.save(out_buffer, format="JPEG", quality=quality, optimize=True)
+        return out_buffer.getvalue()
     except Exception:
-        pass
-    
-    return image_bytes
+        return image_bytes
 
 def upload_file_to_supabase(file_bytes, data_spesa, extension, content_type, user_id="default_user"):
     """Salva il file con naming e path standardizzati: ID_UTENTE/ANNO-MESE/rec_DATA_ORA.ext"""
@@ -338,12 +298,10 @@ def genera_pdf_allegati(anno, mese):
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
                 if is_pdf:
-                    # Registra il PDF allegato per la fusione successiva
                     pdf_files_to_merge.append({
                         "bytes": resp.content,
                         "info": f"Allegato PDF - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
                     })
-                    # Inserisce un segnaposto nella griglia delle immagini
                     cell_elements = [
                         Paragraph(text_content, card_body_style),
                         Spacer(1, 4),
@@ -351,9 +309,9 @@ def genera_pdf_allegati(anno, mese):
                     ]
                     cells.append(cell_elements)
                 else:
-                    # Immagine / Scontrino Croppato
                     img_stream = io.BytesIO(resp.content)
                     pil_img = Image.open(img_stream)
+                    pil_img = ImageOps.exif_transpose(pil_img)
                     
                     max_w, max_h = 240, 260
                     w, h = pil_img.size
@@ -373,7 +331,6 @@ def genera_pdf_allegati(anno, mese):
         except Exception:
             continue
 
-    # 1. Impaginazione Griglia Immagini a 2 colonne
     grid_data = []
     for i in range(0, len(cells), 2):
         row = [cells[i]]
@@ -394,7 +351,6 @@ def genera_pdf_allegati(anno, mese):
 
     doc.build(story)
 
-    # 2. Se ci sono file PDF allegati, unisci il PDF generato con gli allegati PDF
     if pdf_files_to_merge:
         merger = PdfWriter()
         merger.append(pdf_filename)
@@ -417,6 +373,10 @@ def genera_pdf_allegati(anno, mese):
 st.title("🧾 Gestione Note Spese 2026")
 
 tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Report Spese", "📁 Export Excel & PDF"])
+
+# Inizializzazione chiavi univoche per il reset dinamico dei file e form
+if "upload_key" not in st.session_state:
+    st.session_state["upload_key"] = 0
 
 # --- TAB 1: REGISTRAZIONE ---
 with tab1:
@@ -467,65 +427,45 @@ with tab1:
 
     st.write("**📷📄 Allegato Scontrino / Fattura (Max 5MB)**")
     col_up1, col_up2 = st.columns(2)
+    
+    # Utilizzo di chiavi dinamiche per resettare totalmente gli uploader al salvataggio
+    k_img = f"img_uploader_{st.session_state['upload_key']}"
+    k_pdf = f"pdf_uploader_{st.session_state['upload_key']}"
+    
     with col_up1:
-        uploaded_image = st.file_uploader("📷 Scatta/Scegli Foto", type=["jpg", "png", "jpeg"], key="img_uploader")
+        uploaded_image = st.file_uploader("📷 Scatta/Scegli Foto", type=["jpg", "png", "jpeg"], key=k_img)
     with col_up2:
-        uploaded_pdf = st.file_uploader("📄 Scegli PDF", type=["pdf"], key="pdf_uploader")
+        uploaded_pdf = st.file_uploader("📄 Scegli PDF", type=["pdf"], key=k_pdf)
 
-    # Inizializza stato file preparato per l'upload
-    if "prepared_file" not in st.session_state:
-        st.session_state["prepared_file"] = None
+    prepared_file = None
 
-    # GESTIONE FOTO: CROP AUTOMATICO CON ANTEPRIMA & CONFRONTO
+    # ANTEPRIMA ED ELABORAZIONE FOTO
     if uploaded_image is not None:
         if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file immagine supera il limite di 5MB!")
         else:
             orig_bytes = uploaded_image.getvalue()
+            opt_bytes = optimize_image(orig_bytes)
             
-            # Applica algoritmo Auto-Crop OpenCV
-            cropped_bytes = crop_receipt_image(orig_bytes)
+            st.image(opt_bytes, caption="Anteprima Allegato Foto", use_container_width=True)
 
-            st.write("### ✂️ Revisione e Crop Fotografico")
-            col_orig, col_crop = st.columns(2)
-            
-            with col_orig:
-                st.image(orig_bytes, caption="Originale", use_container_width=True)
-            with col_crop:
-                st.image(cropped_bytes, caption="Croppata (Rilevata)", use_container_width=True)
+            prepared_file = {
+                "bytes": opt_bytes,
+                "ext": "jpg",
+                "mime": "image/jpeg"
+            }
 
-            crop_choice = st.radio(
-                "Quale versione vuoi salvare?",
-                options=["Scontrino Croppato", "Foto Originale"],
-                horizontal=True
-            )
-
-            if crop_choice == "Scontrino Croppato":
-                st.session_state["prepared_file"] = {
-                    "bytes": cropped_bytes,
-                    "ext": "jpg",
-                    "mime": "image/jpeg"
-                }
-            else:
-                st.session_state["prepared_file"] = {
-                    "bytes": orig_bytes,
-                    "ext": "jpg",
-                    "mime": "image/jpeg"
-                }
-
-    # GESTIONE PDF
+    # ELABORAZIONE PDF
     elif uploaded_pdf is not None:
         if uploaded_pdf.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file PDF supera il limite di 5MB!")
         else:
-            st.success(f"📄 PDF selezionato: `{uploaded_pdf.name}`")
-            st.session_state["prepared_file"] = {
+            st.success(f"📄 PDF pronto: `{uploaded_pdf.name}`")
+            prepared_file = {
                 "bytes": uploaded_pdf.getvalue(),
                 "ext": "pdf",
                 "mime": "application/pdf"
             }
-    else:
-        st.session_state["prepared_file"] = None
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
         if importo_input <= 0 and not is_telepass:
@@ -551,15 +491,13 @@ with tab1:
 
             d_str = data_input.strftime("%Y-%m-%d")
             
-            # Caricamento del file preparato (Immagine o PDF)
             file_url = None
-            prep = st.session_state.get("prepared_file")
-            if prep:
+            if prepared_file:
                 file_url = upload_file_to_supabase(
-                    file_bytes=prep["bytes"],
+                    file_bytes=prepared_file["bytes"],
                     data_spesa=d_str,
-                    extension=prep["ext"],
-                    content_type=prep["mime"]
+                    extension=prepared_file["ext"],
+                    content_type=prepared_file["mime"]
                 )
 
             new_record = {
@@ -576,8 +514,10 @@ with tab1:
             }
 
             supabase.table("spese").insert(new_record).execute()
+            
+            # --- RESET COMPLETO DI FORMS E WIDGET ---
             st.session_state["input_note"] = ""
-            st.session_state["prepared_file"] = None
+            st.session_state["upload_key"] += 1  # Forziamo il reset totale degli uploader
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
