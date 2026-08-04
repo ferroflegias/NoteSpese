@@ -7,6 +7,7 @@ import openpyxl
 from openpyxl.styles import PatternFill
 from PIL import Image, ImageOps
 import streamlit as st
+from streamlit_cropper import st_cropper
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
 
@@ -89,29 +90,27 @@ FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 
 # --- UTILITY FOTO OTTIMIZZATE & FILE STORAGE ---
 
-def optimize_image(image_bytes, max_dimension=1600, quality=75):
-    """Corregge l'orientamento EXIF, ridimensiona la foto ed applica una compressione JPEG ottimizzata."""
+def optimize_pil_image(pil_img, max_dimension=1600, quality=75):
+    """Ridimensiona e comprime un'immagine PIL in formato JPEG."""
     try:
-        img = Image.open(io.BytesIO(image_bytes))
-        # Corregge la rotazione automatica degli smartphone
-        img = ImageOps.exif_transpose(img)
-        img = img.convert("RGB")
+        pil_img = ImageOps.exif_transpose(pil_img)
+        pil_img = pil_img.convert("RGB")
 
-        # Ridimensiona se la dimensione supera max_dimension
-        w, h = img.size
+        w, h = pil_img.size
         if max(w, h) > max_dimension:
             ratio = max_dimension / float(max(w, h))
             new_size = (int(w * ratio), int(h * ratio))
-            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            pil_img = pil_img.resize(new_size, Image.Resampling.LANCZOS)
 
         out_buffer = io.BytesIO()
-        img.save(out_buffer, format="JPEG", quality=quality, optimize=True)
+        pil_img.save(out_buffer, format="JPEG", quality=quality, optimize=True)
         return out_buffer.getvalue()
     except Exception:
-        return image_bytes
+        out_buffer = io.BytesIO()
+        pil_img.save(out_buffer, format="JPEG")
+        return out_buffer.getvalue()
 
 def upload_file_to_supabase(file_bytes, data_spesa, extension, content_type, user_id="default_user"):
-    """Salva il file con naming e path standardizzati: ID_UTENTE/ANNO-MESE/rec_DATA_ORA.ext"""
     try:
         dt = datetime.strptime(data_spesa, "%Y-%m-%d")
         anno_mese = dt.strftime("%Y-%m")
@@ -142,7 +141,7 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
 
-# --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
+# --- GENERAZIONE DOCUMENTI (EXCEL & PDF SCALA DI GRIGI) ---
 
 def genera_excel(anno, modo, m_start, m_end):
     if not os.path.exists(EXCEL_TEMPLATE):
@@ -239,6 +238,7 @@ def genera_excel(anno, modo, m_start, m_end):
     return output_filename
 
 def genera_pdf_allegati(anno, mese):
+    """Genera il report PDF con immagini convertite in scala di grigi (Grayscale)."""
     start_date = f"{anno}-{mese:02d}-01"
     end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
 
@@ -270,7 +270,7 @@ def genera_pdf_allegati(anno, mese):
     card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
 
     story = []
-    story.append(Paragraph(f"<b>Allegati Spese (Immagini e PDF) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Paragraph(f"<b>Allegati Spese (Grayscale) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
     story.append(Spacer(1, 15))
 
     cells = []
@@ -309,17 +309,22 @@ def genera_pdf_allegati(anno, mese):
                     ]
                     cells.append(cell_elements)
                 else:
+                    # CONVERSIONE IN SCALA DI GRIGI PER RISPARMIARE TONER
                     img_stream = io.BytesIO(resp.content)
                     pil_img = Image.open(img_stream)
                     pil_img = ImageOps.exif_transpose(pil_img)
+                    pil_img = pil_img.convert("L")  # Scale of Gray
                     
+                    gray_stream = io.BytesIO()
+                    pil_img.save(gray_stream, format="JPEG")
+                    gray_stream.seek(0)
+
                     max_w, max_h = 240, 260
                     w, h = pil_img.size
                     ratio = min(max_w / w, max_h / h)
                     final_w, final_h = int(w * ratio), int(h * ratio)
 
-                    img_stream.seek(0)
-                    rl_img = RLImage(img_stream, width=final_w, height=final_h)
+                    rl_img = RLImage(gray_stream, width=final_w, height=final_h)
 
                     cell_elements = [
                         Paragraph(text_content, card_body_style),
@@ -374,7 +379,6 @@ st.title("🧾 Gestione Note Spese 2026")
 
 tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica", "📊 Report Spese", "📁 Export Excel & PDF"])
 
-# Inizializzazione chiavi univoche per il reset dinamico dei file e form
 if "upload_key" not in st.session_state:
     st.session_state["upload_key"] = 0
 
@@ -428,7 +432,6 @@ with tab1:
     st.write("**📷📄 Allegato Scontrino / Fattura (Max 5MB)**")
     col_up1, col_up2 = st.columns(2)
     
-    # Utilizzo di chiavi dinamiche per resettare totalmente gli uploader al salvataggio
     k_img = f"img_uploader_{st.session_state['upload_key']}"
     k_pdf = f"pdf_uploader_{st.session_state['upload_key']}"
     
@@ -439,18 +442,29 @@ with tab1:
 
     prepared_file = None
 
-    # ANTEPRIMA ED ELABORAZIONE FOTO
+    # CROP INTERATTIVO UTENTE
     if uploaded_image is not None:
         if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file immagine supera il limite di 5MB!")
         else:
-            orig_bytes = uploaded_image.getvalue()
-            opt_bytes = optimize_image(orig_bytes)
+            st.write("✂️ **Ritaglia lo scontrino muovendo i bordi della selezione:**")
             
-            st.image(opt_bytes, caption="Anteprima Allegato Foto", use_container_width=True)
+            img = Image.open(uploaded_image)
+            img = ImageOps.exif_transpose(img)
+
+            # Strumento di Crop Interattivo
+            cropped_img = st_cropper(
+                img,
+                realtime_update=True,
+                box_color="#00FF00",
+                aspect_ratio=None  # Selezione rettangolare libera
+            )
+
+            # Ottimizzazione e conversione
+            cropped_bytes = optimize_pil_image(cropped_img)
 
             prepared_file = {
-                "bytes": opt_bytes,
+                "bytes": cropped_bytes,
                 "ext": "jpg",
                 "mime": "image/jpeg"
             }
@@ -515,9 +529,8 @@ with tab1:
 
             supabase.table("spese").insert(new_record).execute()
             
-            # --- RESET COMPLETO DI FORMS E WIDGET ---
             st.session_state["input_note"] = ""
-            st.session_state["upload_key"] += 1  # Forziamo il reset totale degli uploader
+            st.session_state["upload_key"] += 1
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
@@ -712,13 +725,13 @@ with tab4:
                         use_container_width=True
                     )
 
-    # 2. GENERAZIONE PDF ALLEGATI CUMULATIVO
+    # 2. GENERAZIONE PDF ALLEGATI CUMULATIVO (GRAYSCALE)
     with col_btn2:
         st.markdown("#### 🖼️📄 PDF Allegati Cumulativo")
-        st.caption(f"Verranno uniti immagini e PDF del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
+        st.caption(f"Unisce immagini (in scala di grigi) e PDF del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
         
         if st.button("🖼️ Genera PDF Completo", type="primary", use_container_width=True):
-            with st.spinner("Scaricamento e fusione allegati in corso..."):
+            with st.spinner("Scaricamento, conversione in scala di grigi e fusione allegati in corso..."):
                 pdf_res = genera_pdf_allegati(anno_exp, mese_exp_pdf)
                 
             if pdf_res and os.path.exists(pdf_res):
