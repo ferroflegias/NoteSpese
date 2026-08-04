@@ -270,7 +270,7 @@ def genera_pdf_allegati(anno, mese):
     card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
 
     story = []
-    story.append(Paragraph(f"<b>Allegati Spese (Grayscale) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Paragraph(f"<b>Allegati Spese (Francesco Ferrari) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
     story.append(Spacer(1, 15))
 
     cells = []
