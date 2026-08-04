@@ -10,10 +10,11 @@ import cv2
 import numpy as np
 import streamlit as st
 from supabase import create_client, Client
+from pypdf import PdfReader, PdfWriter
 
 # ReportLab imports per PDF
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
@@ -57,6 +58,7 @@ supabase = init_supabase()
 # --- COSTANTI ---
 BUCKET_NAME = "allegati-spese"
 EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
+MAX_FILE_SIZE_MB = 5
 
 MANDI_NOMI = [
     "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
@@ -87,45 +89,7 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-# --- UTILITY FOTO & AUTO-CROP OPENCV ---
-def save_uploaded_photo(uploaded_file, data_spesa, user_id="default_user"):
-    if uploaded_file is not None:
-        try:
-            dt = datetime.strptime(data_spesa, "%Y-%m-%d")
-            anno_mese = dt.strftime("%Y-%m")
-            now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-            
-            filename = f"rec_{data_spesa}_{now_str}.jpg"
-            storage_path = f"{user_id}/{anno_mese}/{filename}"
-
-            img = Image.open(uploaded_file)
-            img_byte_arr = io.BytesIO()
-            img.convert('RGB').save(img_byte_arr, format='JPEG')
-            file_bytes = img_byte_arr.getvalue()
-
-            supabase.storage.from_(BUCKET_NAME).upload(
-                path=storage_path,
-                file=file_bytes,
-                file_options={"content-type": "image/jpeg"}
-            )
-
-            return supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
-
-        except Exception as e:
-            st.error(f"Errore durante l'upload della foto su Supabase Storage: {e}")
-            return None
-    return None
-
-def delete_photo_from_storage(public_url):
-    if not public_url or not isinstance(public_url, str):
-        return
-    try:
-        target_token = f"{BUCKET_NAME}/"
-        if target_token in public_url:
-            storage_path = public_url.split(target_token)[-1]
-            supabase.storage.from_(BUCKET_NAME).remove([storage_path])
-    except Exception as e:
-        st.warning(f"Impossibile eliminare l'immagine dallo Storage: {e}")
+# --- UTILITY OPENCV & FILE STORAGE ---
 
 def crop_receipt_image(image_bytes):
     """Rileva i contorni dello scontrino tramite OpenCV e ritaglia solo la ricevuta."""
@@ -186,7 +150,40 @@ def crop_receipt_image(image_bytes):
     
     return image_bytes
 
-# --- GENERAZIONE GENERATORI (EXCEL & PDF) ---
+def upload_file_to_supabase(file_bytes, data_spesa, extension, content_type, user_id="default_user"):
+    """Salva il file con naming e path standardizzati: ID_UTENTE/ANNO-MESE/rec_DATA_ORA.ext"""
+    try:
+        dt = datetime.strptime(data_spesa, "%Y-%m-%d")
+        anno_mese = dt.strftime("%Y-%m")
+        now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        filename = f"rec_{data_spesa}_{now_str}.{extension}"
+        storage_path = f"{user_id}/{anno_mese}/{filename}"
+
+        supabase.storage.from_(BUCKET_NAME).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": content_type}
+        )
+
+        return supabase.storage.from_(BUCKET_NAME).get_public_url(storage_path)
+    except Exception as e:
+        st.error(f"Errore durante l'upload su Supabase Storage: {e}")
+        return None
+
+def delete_photo_from_storage(public_url):
+    if not public_url or not isinstance(public_url, str):
+        return
+    try:
+        target_token = f"{BUCKET_NAME}/"
+        if target_token in public_url:
+            storage_path = public_url.split(target_token)[-1]
+            supabase.storage.from_(BUCKET_NAME).remove([storage_path])
+    except Exception as e:
+        st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
+
+# --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
+
 def genera_excel(anno, modo, m_start, m_end):
     if not os.path.exists(EXCEL_TEMPLATE):
         st.error(f"File modello '{EXCEL_TEMPLATE}' non trovato!")
@@ -281,11 +278,10 @@ def genera_excel(anno, modo, m_start, m_end):
     wb.save(output_filename)
     return output_filename
 
-def genera_pdf_allegati(anno, mese, auto_crop=True):
+def genera_pdf_allegati(anno, mese):
     start_date = f"{anno}-{mese:02d}-01"
     end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
 
-    # Ordinamento per data ASC e sotto-ordinamento per id ASC
     response = supabase.table("spese") \
         .select("*") \
         .gte("data", start_date) \
@@ -299,7 +295,7 @@ def genera_pdf_allegati(anno, mese, auto_crop=True):
     if not spese:
         return None
 
-    pdf_filename = f"Allegati_Scontrini_{MANDI_NOMI[mese-1]}_{anno}.pdf"
+    pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}.pdf"
     doc = SimpleDocTemplate(
         pdf_filename,
         pagesize=A4,
@@ -311,62 +307,73 @@ def genera_pdf_allegati(anno, mese, auto_crop=True):
 
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1)
-    card_title_style = ParagraphStyle('CardTitle', parent=styles['Normal'], fontSize=9, leading=11, fontName="Helvetica-Bold", textColor=colors.navy)
     card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
 
     story = []
-    story.append(Paragraph(f"<b>Allegati Scontrini - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Paragraph(f"<b>Allegati Spese (Immagini e PDF) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
     story.append(Spacer(1, 15))
 
     cells = []
-    
+    pdf_files_to_merge = []
+
     for spesa in spese:
         url = spesa["allegato_path"]
+        is_pdf = url.lower().endswith(".pdf")
+
+        d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+        dest = spesa.get('destinazione') or '-'
+        cat = spesa.get('categoria') or '-'
+        imp = f"€ {spesa.get('importo', 0.0):.2f}"
+        note = spesa.get('note') or ''
+
+        text_content = f"""
+        <b>Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
+        <b>Destinazione:</b> {dest}<br/>
+        <b>Cat:</b> {cat}<br/>
+        """
+        if note:
+            text_content += f"<b>Note:</b> {note}"
+
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code == 200:
-                img_data = resp.content
-                if auto_crop:
-                    img_data = crop_receipt_image(img_data)
+                if is_pdf:
+                    # Registra il PDF allegato per la fusione successiva
+                    pdf_files_to_merge.append({
+                        "bytes": resp.content,
+                        "info": f"Allegato PDF - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
+                    })
+                    # Inserisce un segnaposto nella griglia delle immagini
+                    cell_elements = [
+                        Paragraph(text_content, card_body_style),
+                        Spacer(1, 4),
+                        Paragraph("📄 <i>[Documento PDF allegato in coda al report]</i>", card_body_style)
+                    ]
+                    cells.append(cell_elements)
+                else:
+                    # Immagine / Scontrino Croppato
+                    img_stream = io.BytesIO(resp.content)
+                    pil_img = Image.open(img_stream)
+                    
+                    max_w, max_h = 240, 260
+                    w, h = pil_img.size
+                    ratio = min(max_w / w, max_h / h)
+                    final_w, final_h = int(w * ratio), int(h * ratio)
 
-                img_stream = io.BytesIO(img_data)
-                pil_img = Image.open(img_stream)
-                
-                # Ridimensiona mantenendo le proporzioni (Max W: 250pt, H: 280pt)
-                max_w, max_h = 240, 260
-                w, h = pil_img.size
-                ratio = min(max_w / w, max_h / h)
-                final_w, final_h = int(w * ratio), int(h * ratio)
+                    img_stream.seek(0)
+                    rl_img = RLImage(img_stream, width=final_w, height=final_h)
 
-                img_stream.seek(0)
-                rl_img = RLImage(img_stream, width=final_w, height=final_h)
+                    cell_elements = [
+                        Paragraph(text_content, card_body_style),
+                        Spacer(1, 4),
+                        rl_img
+                    ]
+                    cells.append(cell_elements)
 
-                d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
-                dest = spesa.get('destinazione') or '-'
-                cat = spesa.get('categoria') or '-'
-                imp = f"€ {spesa.get('importo', 0.0):.2f}"
-                note = spesa.get('note') or ''
-
-                text_content = f"""
-                <b>Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
-                <b>Destinazione:</b> {dest}<br/>
-                <b>Cat:</b> {cat}<br/>
-                """
-                if note:
-                    text_content += f"<b>Note:</b> {note}"
-
-                cell_elements = [
-                    Paragraph(text_content, card_body_style),
-                    Spacer(1, 4),
-                    rl_img
-                ]
-
-                cells.append(cell_elements)
-
-        except Exception as e:
+        except Exception:
             continue
 
-    # Organizzazione in griglia a 2 colonne
+    # 1. Impaginazione Griglia Immagini a 2 colonne
     grid_data = []
     for i in range(0, len(cells), 2):
         row = [cells[i]]
@@ -386,6 +393,24 @@ def genera_pdf_allegati(anno, mese, auto_crop=True):
         story.append(t)
 
     doc.build(story)
+
+    # 2. Se ci sono file PDF allegati, unisci il PDF generato con gli allegati PDF
+    if pdf_files_to_merge:
+        merger = PdfWriter()
+        merger.append(pdf_filename)
+
+        for pdf_item in pdf_files_to_merge:
+            pdf_bytes = io.BytesIO(pdf_item["bytes"])
+            merger.append(pdf_bytes)
+
+        merged_pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}_Completo.pdf"
+        merger.write(merged_pdf_filename)
+        merger.close()
+        
+        if os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
+        return merged_pdf_filename
+
     return pdf_filename
 
 # --- INTERFACCIA STREAMLIT ---
@@ -408,7 +433,7 @@ with tab1:
     st.write("**What (Categoria)**")
     cat_selection = st.radio(
         "Categoria",
-        options=["🍽️ Bar/Rist/Alb", "🅿️ Parc/Taxi/Aereo", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
+        options=["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
         horizontal=True,
         label_visibility="collapsed"
     )
@@ -439,7 +464,68 @@ with tab1:
         st.session_state["input_note"] = ""
         
     note_input = st.text_area("Notes", value=st.session_state["input_note"], height=70, key="note_widget")
-    uploaded_photo = st.file_uploader("📷 Foto Scontrino", type=["jpg", "png", "jpeg"])
+
+    st.write("**📷📄 Allegato Scontrino / Fattura (Max 5MB)**")
+    col_up1, col_up2 = st.columns(2)
+    with col_up1:
+        uploaded_image = st.file_uploader("📷 Scatta/Scegli Foto", type=["jpg", "png", "jpeg"], key="img_uploader")
+    with col_up2:
+        uploaded_pdf = st.file_uploader("📄 Scegli PDF", type=["pdf"], key="pdf_uploader")
+
+    # Inizializza stato file preparato per l'upload
+    if "prepared_file" not in st.session_state:
+        st.session_state["prepared_file"] = None
+
+    # GESTIONE FOTO: CROP AUTOMATICO CON ANTEPRIMA & CONFRONTO
+    if uploaded_image is not None:
+        if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            st.error("⚠️ Il file immagine supera il limite di 5MB!")
+        else:
+            orig_bytes = uploaded_image.getvalue()
+            
+            # Applica algoritmo Auto-Crop OpenCV
+            cropped_bytes = crop_receipt_image(orig_bytes)
+
+            st.write("### ✂️ Revisione e Crop Fotografico")
+            col_orig, col_crop = st.columns(2)
+            
+            with col_orig:
+                st.image(orig_bytes, caption="Originale", use_container_width=True)
+            with col_crop:
+                st.image(cropped_bytes, caption="Croppata (Rilevata)", use_container_width=True)
+
+            crop_choice = st.radio(
+                "Quale versione vuoi salvare?",
+                options=["Scontrino Croppato", "Foto Originale"],
+                horizontal=True
+            )
+
+            if crop_choice == "Scontrino Croppato":
+                st.session_state["prepared_file"] = {
+                    "bytes": cropped_bytes,
+                    "ext": "jpg",
+                    "mime": "image/jpeg"
+                }
+            else:
+                st.session_state["prepared_file"] = {
+                    "bytes": orig_bytes,
+                    "ext": "jpg",
+                    "mime": "image/jpeg"
+                }
+
+    # GESTIONE PDF
+    elif uploaded_pdf is not None:
+        if uploaded_pdf.size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            st.error("⚠️ Il file PDF supera il limite di 5MB!")
+        else:
+            st.success(f"📄 PDF selezionato: `{uploaded_pdf.name}`")
+            st.session_state["prepared_file"] = {
+                "bytes": uploaded_pdf.getvalue(),
+                "ext": "pdf",
+                "mime": "application/pdf"
+            }
+    else:
+        st.session_state["prepared_file"] = None
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
         if importo_input <= 0 and not is_telepass:
@@ -464,7 +550,17 @@ with tab1:
                 metodo_str = "CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante")
 
             d_str = data_input.strftime("%Y-%m-%d")
-            photo_url = save_uploaded_photo(uploaded_photo, d_str)
+            
+            # Caricamento del file preparato (Immagine o PDF)
+            file_url = None
+            prep = st.session_state.get("prepared_file")
+            if prep:
+                file_url = upload_file_to_supabase(
+                    file_bytes=prep["bytes"],
+                    data_spesa=d_str,
+                    extension=prep["ext"],
+                    content_type=prep["mime"]
+                )
 
             new_record = {
                 "data": d_str,
@@ -475,12 +571,13 @@ with tab1:
                 "importo": importo_input,
                 "km": 0.0,
                 "note": note_input,
-                "allegato_path": photo_url,
+                "allegato_path": file_url,
                 "valuta_straniera": 1 if is_foreign else 0
             }
 
             supabase.table("spese").insert(new_record).execute()
             st.session_state["input_note"] = ""
+            st.session_state["prepared_file"] = None
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
@@ -535,7 +632,10 @@ with tab2:
 
                 allegato = rec['allegato_path']
                 if isinstance(allegato, str) and allegato.startswith("http"):
-                    st.image(allegato, caption="Allegato foto", width=250)
+                    if allegato.lower().endswith(".pdf"):
+                        st.markdown(f"📄 [Visualizza Allegato PDF]({allegato})")
+                    else:
+                        st.image(allegato, caption="Allegato foto", width=250)
                 
                 c_sub, c_del = st.columns([1, 1])
                 with c_sub:
@@ -564,7 +664,7 @@ with tab2:
                         delete_photo_from_storage(photo_url)
 
                     supabase.table("spese").delete().eq("id", int(record_id)).execute()
-                    st.warning("Record ed eventuale foto eliminati!")
+                    st.warning("Record ed eventuale allegato eliminati!")
                     st.rerun()
         else:
             st.caption("👈 Seleziona una riga dalla tabella sopra per visualizzare il modulo di modifica.")
@@ -672,24 +772,23 @@ with tab4:
                         use_container_width=True
                     )
 
-    # 2. GENERAZIONE PDF ALLEGATI
+    # 2. GENERAZIONE PDF ALLEGATI CUMULATIVO
     with col_btn2:
-        st.markdown("#### 🖼️ PDF Allegati Scontrini")
-        st.caption(f"Verranno scaricate le foto del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
-        use_crop = st.checkbox("✂️ Ritaglia scontrini con AI/OpenCV", value=True)
+        st.markdown("#### 🖼️📄 PDF Allegati Cumulativo")
+        st.caption(f"Verranno uniti immagini e PDF del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
         
-        if st.button("🖼️ Genera PDF Allegati", type="primary", use_container_width=True):
-            with st.spinner("Scarico e processamento immagini in corso..."):
-                pdf_res = genera_pdf_allegati(anno_exp, mese_exp_pdf, auto_crop=use_crop)
+        if st.button("🖼️ Genera PDF Completo", type="primary", use_container_width=True):
+            with st.spinner("Scaricamento e fusione allegati in corso..."):
+                pdf_res = genera_pdf_allegati(anno_exp, mese_exp_pdf)
                 
             if pdf_res and os.path.exists(pdf_res):
                 with open(pdf_res, "rb") as f_pdf:
                     st.download_button(
-                        label="📥 Scarica PDF Scontrini",
+                        label="📥 Scarica PDF Allegati",
                         data=f_pdf,
                         file_name=pdf_res,
                         mime="application/pdf",
                         use_container_width=True
                     )
             else:
-                st.warning("Nessuna foto allegato trovata per il mese selezionato.")
+                st.warning("Nessun allegato (foto o PDF) trovato per il mese selezionato.")
