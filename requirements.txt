@@ -8,3 +8,4 @@ opencv-python-headless
 requests
 pypdf
 pdf2image
+streamlit-cropper
