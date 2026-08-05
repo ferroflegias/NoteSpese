@@ -1,5 +1,5 @@
 streamlit
-starlette
+starlette<0.39.0
 uvicorn
 openpyxl
 pillow
