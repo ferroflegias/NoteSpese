@@ -148,7 +148,7 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION (SDK GOOGLE-GENAI) ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza gemini-1.5-flash per ottimizzare il consumo di token ed evitare blocchi di quota."""
+    """Utilizza il nuovo SDK google-genai provando i modelli ufficiali ed evitando errori 404."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
@@ -175,30 +175,50 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     try:
         client = genai.Client(api_key=api_key)
 
-        response = client.models.generate_content(
-            model='gemini-1.5-flash',
-            contents=[
-                types.Part.from_bytes(
-                    data=file_bytes,
-                    mime_type=mime_type,
-                ),
-                prompt,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
+        # Nomi modello ufficiali riconosciuti dall'API v1/v1beta del nuovo SDK
+        candidate_models = [
+            "gemini-2.0-flash",
+            "gemini-1.5-flash-001",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-pro-001"
+        ]
 
-        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        parsed_data = json.loads(clean_text)
-        return parsed_data
+        last_error = None
+
+        for model_name in candidate_models:
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[
+                        types.Part.from_bytes(
+                            data=file_bytes,
+                            mime_type=mime_type,
+                        ),
+                        prompt,
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json"
+                    )
+                )
+
+                clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+                parsed_data = json.loads(clean_text)
+                return parsed_data
+
+            except Exception as e_model:
+                last_error = e_model
+                continue
+
+        # Se nessun modello ha risposto
+        err_msg = str(last_error)
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            st.warning("⏳ **Quota limite raggiunta.** Attendi 30-60 secondi prima di riprovare.")
+        else:
+            st.error(f"❌ Dettaglio Errore API Google: {last_error}")
+        return None
 
     except Exception as e:
-        err_msg = str(e)
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            st.warning("⏳ **Quota limite raggiunta.** Genera una nuova chiave in un 'NEW project' su AI Studio oppure attendi 60 secondi.")
-        else:
-            st.error(f"❌ Dettaglio Errore API Google: {e}")
+        st.error(f"❌ Errore Client Gemini: {e}")
         return None
 
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
