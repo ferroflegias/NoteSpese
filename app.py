@@ -150,57 +150,49 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini AI per estrarre i dati dallo scontrino in formato JSON."""
+    """Utilizza Gemini AI con i nomi modello ufficiali per estrarre i dati dallo scontrino in formato JSON."""
     if not GEMINI_KEY:
         st.warning("⚠️ Chiave GEMINI_API_KEY non trovata nei secrets di Streamlit.")
         return None
 
-    try:
-        # Usa gemini-1.5-flash-latest o gemini-2.0-flash per evitare l'errore 404 v1beta
-        model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash-latest",
-            generation_config={"response_mime_type": "application/json"}
-        )
-        
-        prompt = """
-        Sei un assistente per la gestione delle note spese aziendali italiane.
-        Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati in formato JSON strictly formattato:
-        
-        {
-          "data": "YYYY-MM-DD",
-          "destinazione": "Ragione Sociale o Nome Esercente e Città se visibile",
-          "importo": 0.00,
-          "categoria_suggerita": "Bar/Rist/Alb" o "Parcheggio/Taxi" o "Carburante" o "Telepass" o "Nolo" o "Altro",
-          "pagamento_suggerito": "CC" o "Contanti" o "Carta Carburante",
-          "note": "Eventuale breve descrizione o dettagli rilevati"
-        }
-        
-        Se la data non è visibile, imposta la data di oggi.
-        Se l'importo contiene la virgola, convertilo in numero float con punto.
-        """
-        
-        content_part = {
-            "mime_type": mime_type,
-            "data": file_bytes
-        }
+    prompt = """
+    Sei un assistente per la gestione delle note spese aziendali italiane.
+    Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati in formato JSON strictly formattato:
+    
+    {
+      "data": "YYYY-MM-DD",
+      "destinazione": "Ragione Sociale o Nome Esercente e Città se visibile",
+      "importo": 0.00,
+      "categoria_suggerita": "Bar/Rist/Alb" oppure "Parcheggio/Taxi" oppure "Carburante" oppure "Telepass" oppure "Nolo" oppure "Altro",
+      "pagamento_suggerito": "CC" oppure "Contanti" oppure "Carta Carburante",
+      "note": "Eventuale breve descrizione o dettagli rilevati"
+    }
+    
+    Se la data non è visibile, imposta la data di oggi.
+    Se l'importo contiene la virgola, convertilo in numero float con punto.
+    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
+    """
+    
+    content_part = {
+        "mime_type": mime_type,
+        "data": file_bytes
+    }
 
-        response = model.generate_content([prompt, content_part])
-        clean_text = response.text.strip()
-        parsed_data = json.loads(clean_text)
-        return parsed_data
-
-    except Exception as e:
-        # Fallback al modello gemini-2.0-flash se 1.5-flash-latest restituisce eccezione
+    # Elenco modelli da provare in ordine di preferenza per massima compatibilità v1beta/v1
+    candidate_models = ["gemini-1.5-flash-001", "gemini-1.5-flash-002", "gemini-1.5-pro", "gemini-pro-vision"]
+    
+    for model_name in candidate_models:
         try:
-            model = genai.GenerativeModel(
-                model_name="gemini-2.0-flash",
-                generation_config={"response_mime_type": "application/json"}
-            )
+            model = genai.GenerativeModel(model_name=model_name)
             response = model.generate_content([prompt, content_part])
-            return json.loads(response.text.strip())
-        except Exception as ex2:
-            st.error(f"Errore durante l'analisi AI di Gemini: {e}")
-            return None
+            clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+            parsed_data = json.loads(clean_text)
+            return parsed_data
+        except Exception:
+            continue
+
+    st.error("Errore durante l'analisi AI: nessun modello Gemini disponibile o risposta non valida.")
+    return None
 
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
@@ -441,7 +433,6 @@ tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica",
 if "upload_key" not in st.session_state:
     st.session_state["upload_key"] = 0
 
-# Inizializzazione dati form rilevati dall'AI
 if "ai_extracted_data" not in st.session_state:
     st.session_state["ai_extracted_data"] = {}
 
@@ -461,7 +452,6 @@ with tab1:
 
     prepared_file = None
 
-    # CROP E RILEVAMENTO ALLEGATO RESPONSIVE
     if uploaded_image is not None:
         if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file immagine supera il limite di 5MB!")
@@ -501,7 +491,6 @@ with tab1:
                 "mime": "application/pdf"
             }
 
-    # PULSANTE ESECUZIONE ANALISI AI
     if prepared_file:
         if st.button("🤖 Analizza Allegato con AI", type="secondary", use_container_width=True):
             with st.spinner("Estraggo i dati dalla ricevuta con Gemini AI..."):
@@ -637,7 +626,7 @@ with tab1:
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
-            
+
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
