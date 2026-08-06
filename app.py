@@ -150,28 +150,33 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini 1.5 Flash per estrarre i dati dallo scontrino in formato JSON."""
+    """Utilizza Gemini AI per estrarre i dati dallo scontrino in formato JSON."""
     if not GEMINI_KEY:
         st.warning("⚠️ Chiave GEMINI_API_KEY non trovata nei secrets di Streamlit.")
         return None
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        # Usa gemini-1.5-flash-latest o gemini-2.0-flash per evitare l'errore 404 v1beta
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash-latest",
+            generation_config={"response_mime_type": "application/json"}
+        )
         
         prompt = """
         Sei un assistente per la gestione delle note spese aziendali italiane.
         Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati in formato JSON strictly formattato:
         
         {
-          "data": "YYYY-MM-DD", (se la data non è chiara o assente usa la data di oggi)
+          "data": "YYYY-MM-DD",
           "destinazione": "Ragione Sociale o Nome Esercente e Città se visibile",
-          "importo": 0.00, (numero float con 2 decimali, il totale finale pagato)
-          "categoria_suggerita": "Bar/Rist/Alb" oppure "Parcheggio/Taxi" oppure "Carburante" oppure "Telepass" oppure "Nolo" oppure "Altro",
-          "pagamento_suggerito": "CC" oppure "Contanti" oppure "Carta Carburante",
+          "importo": 0.00,
+          "categoria_suggerita": "Bar/Rist/Alb" o "Parcheggio/Taxi" o "Carburante" o "Telepass" o "Nolo" o "Altro",
+          "pagamento_suggerito": "CC" o "Contanti" o "Carta Carburante",
           "note": "Eventuale breve descrizione o dettagli rilevati"
         }
         
-        Restituisci ESCLUSIVAMENTE il codice JSON valido senza blocchi markdown aggiuntivi.
+        Se la data non è visibile, imposta la data di oggi.
+        Se l'importo contiene la virgola, convertilo in numero float con punto.
         """
         
         content_part = {
@@ -180,13 +185,22 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         }
 
         response = model.generate_content([prompt, content_part])
-        clean_text = response.text.strip().replace("```json", "").replace("```", "")
+        clean_text = response.text.strip()
         parsed_data = json.loads(clean_text)
         return parsed_data
 
     except Exception as e:
-        st.error(f"Errore durante l'analisi AI di Gemini: {e}")
-        return None
+        # Fallback al modello gemini-2.0-flash se 1.5-flash-latest restituisce eccezione
+        try:
+            model = genai.GenerativeModel(
+                model_name="gemini-2.0-flash",
+                generation_config={"response_mime_type": "application/json"}
+            )
+            response = model.generate_content([prompt, content_part])
+            return json.loads(response.text.strip())
+        except Exception as ex2:
+            st.error(f"Errore durante l'analisi AI di Gemini: {e}")
+            return None
 
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
@@ -447,23 +461,31 @@ with tab1:
 
     prepared_file = None
 
-    # CROP E RILEVAMENTO ALLEGATO
+    # CROP E RILEVAMENTO ALLEGATO RESPONSIVE
     if uploaded_image is not None:
         if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file immagine supera il limite di 5MB!")
         else:
-            st.caption("✂️ **Ritaglia lo scontrino muovendo i bordi della selezione:**")
             img = Image.open(uploaded_image)
             img = ImageOps.exif_transpose(img)
 
-            cropped_img = st_cropper(
-                img,
-                realtime_update=True,
-                box_color="#00FF00",
-                aspect_ratio=None
-            )
+            # Opzione per disattivare il crop se si riscontrano problemi su iOS
+            enable_crop = st.checkbox("✂️ Attiva ritaglio/crop immagine", value=True)
 
-            cropped_bytes = optimize_pil_image(cropped_img)
+            if enable_crop:
+                st.caption("📱 *Muovi la selezione per isolare lo scontrino:*")
+                cropped_img = st_cropper(
+                    img,
+                    realtime_update=True,
+                    box_color="#00FF00",
+                    aspect_ratio=None,
+                    max_outline=500
+                )
+                cropped_bytes = optimize_pil_image(cropped_img)
+            else:
+                cropped_bytes = optimize_pil_image(img)
+                st.image(cropped_bytes, caption="Foto scontrino intera", use_container_width=True)
+
             prepared_file = {
                 "bytes": cropped_bytes,
                 "ext": "jpg",
@@ -495,7 +517,6 @@ with tab1:
 
     ai_data = st.session_state.get("ai_extracted_data", {})
 
-    # Pre-popolamento dinamico basato sull'AI o su valori di default
     default_date = datetime.now()
     if ai_data.get("data"):
         try:
@@ -514,7 +535,6 @@ with tab1:
     st.write("**What (Categoria)**")
     cat_options = ["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"]
     
-    # Mappatura categoria AI
     default_cat_idx = 0
     ai_cat = ai_data.get("categoria_suggerita", "")
     for idx, opt in enumerate(cat_options):
@@ -613,7 +633,6 @@ with tab1:
 
             supabase.table("spese").insert(new_record).execute()
             
-            # Reset form e dati AI
             st.session_state["input_note"] = ""
             st.session_state["ai_extracted_data"] = {}
             st.session_state["upload_key"] += 1
