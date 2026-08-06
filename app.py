@@ -150,10 +150,16 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini AI con i nomi modello ufficiali per estrarre i dati dallo scontrino in formato JSON."""
-    if not GEMINI_KEY:
-        st.warning("⚠️ Chiave GEMINI_API_KEY non trovata nei secrets di Streamlit.")
+    """Utilizza Gemini AI per estrarre i dati dallo scontrino in formato JSON."""
+    
+    # 1. Verifica presenza chiave API nei secrets
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
         return None
+
+    # Re-inizializzazione per sicurezza
+    genai.configure(api_key=api_key)
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
@@ -170,7 +176,6 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     
     Se la data non è visibile, imposta la data di oggi.
     Se l'importo contiene la virgola, convertilo in numero float con punto.
-    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
     """
     
     content_part = {
@@ -178,22 +183,27 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         "data": file_bytes
     }
 
-    # Elenco modelli da provare in ordine di preferenza per massima compatibilità v1beta/v1
-    candidate_models = ["gemini-1.5-flash-001", "gemini-1.5-flash-002", "gemini-1.5-pro", "gemini-pro-vision"]
-    
-    for model_name in candidate_models:
+    # Prova i modelli standard Google AI Studio
+    for model_name in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
         try:
-            model = genai.GenerativeModel(model_name=model_name)
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"response_mime_type": "application/json"}
+            )
             response = model.generate_content([prompt, content_part])
-            clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+            
+            clean_text = response.text.strip()
             parsed_data = json.loads(clean_text)
             return parsed_data
-        except Exception:
+
+        except Exception as e:
+            # Stampa l'errore reale per facilitare il debug
+            st.warning(f"Tentativo con modello `{model_name}` fallito: {e}")
             continue
 
-    st.error("Errore durante l'analisi AI: nessun modello Gemini disponibile o risposta non valida.")
+    st.error("❌ Impossibile completare l'analisi con Gemini. Verifica i messaggi sopra.")
     return None
-
+    
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
 def genera_excel(anno, modo, m_start, m_end):
