@@ -1,5 +1,6 @@
 import os
 import io
+import json
 from datetime import datetime
 import requests
 import pandas as pd
@@ -10,6 +11,7 @@ import streamlit as st
 from streamlit_cropper import st_cropper
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
+import google.generativeai as genai
 
 # ReportLab imports per PDF
 from reportlab.lib.pagesizes import A4
@@ -33,7 +35,7 @@ def check_password():
     pwd_input = st.text_input("🔑 Inserisci la Password di accesso", type="password")
     
     if pwd_input:
-        if pwd_input == st.secrets["PASSWORD"]:
+        if pwd_input == st.secrets.get("PASSWORD"):
             st.session_state["password_correct"] = True
             st.rerun()
         else:
@@ -54,9 +56,14 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
+# --- INIZIALIZZAZIONE GEMINI AI ---
+GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+
 # --- COSTANTI ---
 BUCKET_NAME = "allegati-spese"
-EXCEL_TEMPLATE = "Note spese 2026.xlsx"
+EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
 MAX_FILE_SIZE_MB = 5
 
 MANDI_NOMI = [
@@ -91,7 +98,6 @@ FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 # --- UTILITY FOTO OTTIMIZZATE & FILE STORAGE ---
 
 def optimize_pil_image(pil_img, max_dimension=1600, quality=75):
-    """Ridimensiona e comprime un'immagine PIL in formato JPEG."""
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
         pil_img = pil_img.convert("RGB")
@@ -141,7 +147,48 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
 
-# --- GENERAZIONE DOCUMENTI (EXCEL & PDF SCALA DI GRIGI) ---
+# --- ANALISI ALLEGATO CON GEMINI VISION ---
+
+def analyze_receipt_with_gemini(file_bytes, mime_type):
+    """Utilizza Gemini 1.5 Flash per estrarre i dati dallo scontrino in formato JSON."""
+    if not GEMINI_KEY:
+        st.warning("⚠️ Chiave GEMINI_API_KEY non trovata nei secrets di Streamlit.")
+        return None
+
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        prompt = """
+        Sei un assistente per la gestione delle note spese aziendali italiane.
+        Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati in formato JSON strictly formattato:
+        
+        {
+          "data": "YYYY-MM-DD", (se la data non è chiara o assente usa la data di oggi)
+          "destinazione": "Ragione Sociale o Nome Esercente e Città se visibile",
+          "importo": 0.00, (numero float con 2 decimali, il totale finale pagato)
+          "categoria_suggerita": "Bar/Rist/Alb" oppure "Parcheggio/Taxi" oppure "Carburante" oppure "Telepass" oppure "Nolo" oppure "Altro",
+          "pagamento_suggerito": "CC" oppure "Contanti" oppure "Carta Carburante",
+          "note": "Eventuale breve descrizione o dettagli rilevati"
+        }
+        
+        Restituisci ESCLUSIVAMENTE il codice JSON valido senza blocchi markdown aggiuntivi.
+        """
+        
+        content_part = {
+            "mime_type": mime_type,
+            "data": file_bytes
+        }
+
+        response = model.generate_content([prompt, content_part])
+        clean_text = response.text.strip().replace("```json", "").replace("```", "")
+        parsed_data = json.loads(clean_text)
+        return parsed_data
+
+    except Exception as e:
+        st.error(f"Errore durante l'analisi AI di Gemini: {e}")
+        return None
+
+# --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
 def genera_excel(anno, modo, m_start, m_end):
     if not os.path.exists(EXCEL_TEMPLATE):
@@ -238,7 +285,6 @@ def genera_excel(anno, modo, m_start, m_end):
     return output_filename
 
 def genera_pdf_allegati(anno, mese):
-    """Genera il report PDF con immagini convertite in scala di grigi (Grayscale)."""
     start_date = f"{anno}-{mese:02d}-01"
     end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
 
@@ -270,7 +316,7 @@ def genera_pdf_allegati(anno, mese):
     card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
 
     story = []
-    story.append(Paragraph(f"<b>Allegati Spese (Francesco Ferrari) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Paragraph(f"<b>Allegati Spese (Grayscale) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
     story.append(Spacer(1, 15))
 
     cells = []
@@ -309,11 +355,10 @@ def genera_pdf_allegati(anno, mese):
                     ]
                     cells.append(cell_elements)
                 else:
-                    # CONVERSIONE IN SCALA DI GRIGI PER RISPARMIARE TONER
                     img_stream = io.BytesIO(resp.content)
                     pil_img = Image.open(img_stream)
                     pil_img = ImageOps.exif_transpose(pil_img)
-                    pil_img = pil_img.convert("L")  # Scale of Gray
+                    pil_img = pil_img.convert("L")
                     
                     gray_stream = io.BytesIO()
                     pil_img.save(gray_stream, format="JPEG")
@@ -382,56 +427,16 @@ tab1, tab2, tab3, tab4 = st.tabs(["➕ Nuova Spesa", "📑 Registri / Modifica",
 if "upload_key" not in st.session_state:
     st.session_state["upload_key"] = 0
 
-# --- TAB 1: REGISTRAZIONE ---
+# Inizializzazione dati form rilevati dall'AI
+if "ai_extracted_data" not in st.session_state:
+    st.session_state["ai_extracted_data"] = {}
+
+# --- TAB 1: REGISTRAZIONE SMART CON AI ---
 with tab1:
-    st.subheader("Registra Spesa")
-    
-    col_d, col_w = st.columns([1, 1])
-    with col_d:
-        data_input = st.date_input("When (Data)", datetime.now())
-    with col_w:
-        dest_input = st.text_input("Where (Destinazione)")
+    st.subheader("Registra Nuova Spesa")
+    st.markdown("#### Step 1: Carica Allegato (Foto o PDF)")
 
-    scopo_input = st.text_input("Why (Scopo)")
-
-    st.write("**What (Categoria)**")
-    cat_selection = st.radio(
-        "Categoria",
-        options=["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-
-    is_telepass = "Telepass" in cat_selection
-    
-    if not is_telepass:
-        st.write("**Payment (Metodo Pagamento)**")
-        pay_selection = st.radio(
-            "Pagamento",
-            options=["💳 CC", "💶 Contanti", "📄⛽ Carta Carburante"],
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-    else:
-        pay_selection = None
-        st.info("ℹ️ Per il Telepass il metodo di pagamento viene omesso.")
-
-    col_imp, col_curr = st.columns([2, 1])
-    with col_imp:
-        importo_input = st.number_input("Value (€)", min_value=0.0, step=0.5, format="%.2f")
-    with col_curr:
-        st.write("")
-        st.write("")
-        is_foreign = st.checkbox("Non € (🔣)")
-
-    if "input_note" not in st.session_state:
-        st.session_state["input_note"] = ""
-        
-    note_input = st.text_area("Notes", value=st.session_state["input_note"], height=70, key="note_widget")
-
-    st.write("**📷📄 Allegato Scontrino / Fattura (Max 5MB)**")
     col_up1, col_up2 = st.columns(2)
-    
     k_img = f"img_uploader_{st.session_state['upload_key']}"
     k_pdf = f"pdf_uploader_{st.session_state['upload_key']}"
     
@@ -442,34 +447,29 @@ with tab1:
 
     prepared_file = None
 
-    # CROP INTERATTIVO UTENTE
+    # CROP E RILEVAMENTO ALLEGATO
     if uploaded_image is not None:
         if uploaded_image.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file immagine supera il limite di 5MB!")
         else:
-            st.write("✂️ **Ritaglia lo scontrino muovendo i bordi della selezione:**")
-            
+            st.caption("✂️ **Ritaglia lo scontrino muovendo i bordi della selezione:**")
             img = Image.open(uploaded_image)
             img = ImageOps.exif_transpose(img)
 
-            # Strumento di Crop Interattivo
             cropped_img = st_cropper(
                 img,
                 realtime_update=True,
                 box_color="#00FF00",
-                aspect_ratio=None  # Selezione rettangolare libera
+                aspect_ratio=None
             )
 
-            # Ottimizzazione e conversione
             cropped_bytes = optimize_pil_image(cropped_img)
-
             prepared_file = {
                 "bytes": cropped_bytes,
                 "ext": "jpg",
                 "mime": "image/jpeg"
             }
 
-    # ELABORAZIONE PDF
     elif uploaded_pdf is not None:
         if uploaded_pdf.size > MAX_FILE_SIZE_MB * 1024 * 1024:
             st.error("⚠️ Il file PDF supera il limite di 5MB!")
@@ -480,6 +480,90 @@ with tab1:
                 "ext": "pdf",
                 "mime": "application/pdf"
             }
+
+    # PULSANTE ESECUZIONE ANALISI AI
+    if prepared_file:
+        if st.button("🤖 Analizza Allegato con AI", type="secondary", use_container_width=True):
+            with st.spinner("Estraggo i dati dalla ricevuta con Gemini AI..."):
+                extracted = analyze_receipt_with_gemini(prepared_file["bytes"], prepared_file["mime"])
+                if extracted:
+                    st.session_state["ai_extracted_data"] = extracted
+                    st.success("✅ Dati estratti con successo! Verifica e conferma i campi qui sotto.")
+
+    st.divider()
+    st.markdown("#### Step 2: Verifica e Conferma Dati Spesa")
+
+    ai_data = st.session_state.get("ai_extracted_data", {})
+
+    # Pre-popolamento dinamico basato sull'AI o su valori di default
+    default_date = datetime.now()
+    if ai_data.get("data"):
+        try:
+            default_date = datetime.strptime(ai_data["data"], "%Y-%m-%d")
+        except ValueError:
+            pass
+
+    col_d, col_w = st.columns([1, 1])
+    with col_d:
+        data_input = st.date_input("When (Data)", value=default_date)
+    with col_w:
+        dest_input = st.text_input("Where (Destinazione/Esercente)", value=ai_data.get("destinazione", ""))
+
+    scopo_input = st.text_input("Why (Scopo)")
+
+    st.write("**What (Categoria)**")
+    cat_options = ["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"]
+    
+    # Mappatura categoria AI
+    default_cat_idx = 0
+    ai_cat = ai_data.get("categoria_suggerita", "")
+    for idx, opt in enumerate(cat_options):
+        if ai_cat in opt:
+            default_cat_idx = idx
+            break
+
+    cat_selection = st.radio(
+        "Categoria",
+        options=cat_options,
+        index=default_cat_idx,
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
+    is_telepass = "Telepass" in cat_selection
+    
+    if not is_telepass:
+        st.write("**Payment (Metodo Pagamento)**")
+        pay_options = ["💳 CC", "💶 Contanti", "📄⛽ Carta Carburante"]
+        default_pay_idx = 0
+        ai_pay = ai_data.get("pagamento_suggerito", "")
+        for idx, opt in enumerate(pay_options):
+            if ai_pay in opt:
+                default_pay_idx = idx
+                break
+
+        pay_selection = st.radio(
+            "Pagamento",
+            options=pay_options,
+            index=default_pay_idx,
+            horizontal=True,
+            label_visibility="collapsed"
+        )
+    else:
+        pay_selection = None
+        st.info("ℹ️ Per il Telepass il metodo di pagamento viene omesso.")
+
+    col_imp, col_curr = st.columns([2, 1])
+    with col_imp:
+        ai_imp = float(ai_data.get("importo", 0.0))
+        importo_input = st.number_input("Value (€)", value=ai_imp, min_value=0.0, step=0.5, format="%.2f")
+    with col_curr:
+        st.write("")
+        st.write("")
+        is_foreign = st.checkbox("Non € (🔣)")
+
+    default_note = ai_data.get("note", st.session_state.get("input_note", ""))
+    note_input = st.text_area("Notes", value=default_note, height=70, key="note_widget")
 
     if st.button("💾 Salva Spesa", type="primary", use_container_width=True):
         if importo_input <= 0 and not is_telepass:
@@ -529,7 +613,9 @@ with tab1:
 
             supabase.table("spese").insert(new_record).execute()
             
+            # Reset form e dati AI
             st.session_state["input_note"] = ""
+            st.session_state["ai_extracted_data"] = {}
             st.session_state["upload_key"] += 1
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
