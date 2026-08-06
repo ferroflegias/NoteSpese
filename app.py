@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import time
 from datetime import datetime
 import requests
 import pandas as pd
@@ -91,9 +92,10 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-# --- UTILITY FOTO OTTIMIZZATE & FILE STORAGE ---
+# --- UTILITY FOTO OTTIMIZZATE PER TOKEN SAVING & STORAGE ---
 
-def optimize_pil_image(pil_img, max_dimension=1600, quality=75):
+def optimize_pil_image(pil_img, max_dimension=800, quality=65):
+    """Riduce la risoluzione dell'immagine a max 800px per rientrare nei limiti token del Free Tier."""
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
         pil_img = pil_img.convert("RGB")
@@ -143,10 +145,10 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
 
-# --- ANALISI ALLEGATO CON GEMINI VISION (NUOVO SDK) ---
+# --- ANALISI ALLEGATO CON GEMINI VISION (SDK GOOGLE-GENAI) ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza il nuovo SDK google-genai con modello gemini-2.0-flash."""
+    """Utilizza gemini-1.5-flash per ottimizzare il consumo di token ed evitare blocchi di quota."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
@@ -174,7 +176,7 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         client = genai.Client(api_key=api_key)
 
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-1.5-flash',
             contents=[
                 types.Part.from_bytes(
                     data=file_bytes,
@@ -194,7 +196,7 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     except Exception as e:
         err_msg = str(e)
         if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            st.warning("⏳ **Quota limite momentaneamente raggiunta.** Attendi 30-60 secondi prima di riprovare.")
+            st.warning("⏳ **Quota limite raggiunta.** Genera una nuova chiave in un 'NEW project' su AI Studio oppure attendi 60 secondi.")
         else:
             st.error(f"❌ Dettaglio Errore API Google: {e}")
         return None
