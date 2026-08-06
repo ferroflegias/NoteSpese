@@ -146,7 +146,7 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza il nuovo SDK google-genai (supporta chiavi AQ. e AIzaSy)."""
+    """Utilizza il nuovo SDK google-genai stampando l'errore reale in caso di fallimento."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
@@ -171,7 +171,7 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     """
 
     try:
-        # Inizializzazione Client del nuovo SDK
+        # Inizializzazione Client del nuovo SDK google-genai
         client = genai.Client(api_key=api_key)
 
         response = client.models.generate_content(
@@ -193,11 +193,8 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         return parsed_data
 
     except Exception as e:
-        err_msg = str(e)
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            st.warning("⏳ **Limite di frequenza o quota temporaneamente superato.** Attendi circa 30-60 secondi prima di riprovare.")
-        else:
-            st.error(f"❌ Errore durante l'analisi AI: {e}")
+        # Mostra l'errore preciso a schermo per identificare la causa esatta
+        st.error(f"❌ Dettaglio Errore API Google: {e}")
         return None
     
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
