@@ -1,7 +1,7 @@
 import os
 import io
 import json
-import base64
+import re
 from datetime import datetime
 import requests
 import pandas as pd
@@ -13,7 +13,7 @@ from streamlit_cropper import st_cropper
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_bytes
-from groq import Groq
+import pytesseract
 
 # ReportLab imports per PDF
 from reportlab.lib.pagesizes import A4
@@ -94,7 +94,7 @@ FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="s
 
 # --- UTILITY FOTO OTTIMIZZATE ---
 
-def optimize_pil_image(pil_img, max_dimension=1000, quality=75):
+def optimize_pil_image(pil_img, max_dimension=1200, quality=80):
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
         pil_img = pil_img.convert("RGB")
@@ -144,75 +144,100 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
 
-# --- ANALISI ALLEGATO CON GROQ AI ---
+# --- ANALISI LOCALE CON TESSERACT OCR & REGEX ---
 
-def analyze_receipt_with_groq(file_bytes, mime_type):
-    """Utilizza Groq API (Llama Vision) per estrarre i dati della spesa in formato JSON."""
-    api_key = st.secrets.get("GROQ_API_KEY")
-    if not api_key:
-        st.error("⚠️ Chiave 'GROQ_API_KEY' non trovata nei secrets di Streamlit!")
-        return None
-
-    # Se viene caricato un PDF, convertiamo la prima pagina in JPEG per consentire l'analisi visiva
-    if mime_type == "application/pdf":
-        try:
+def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type):
+    """Esegue OCR locale in italiano e analizza il testo con euristiche e Regex."""
+    try:
+        if mime_type == "application/pdf":
             images = convert_from_bytes(file_bytes)
             if images:
-                img_byte_arr = io.BytesIO()
-                images[0].save(img_byte_arr, format='JPEG')
-                file_bytes = img_byte_arr.getvalue()
-                mime_type = "image/jpeg"
-        except Exception as e:
-            st.error(f"❌ Errore nella conversione del PDF: {e}")
-            return None
+                pil_img = images[0]
+            else:
+                return None
+        else:
+            pil_img = Image.open(io.BytesIO(file_bytes))
 
-    prompt = """
-    Sei un assistente per la gestione delle note spese aziendali italiane.
-    Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati restituendo un oggetto JSON con queste esatte chiavi:
-    
-    {
-      "data": "YYYY-MM-DD",
-      "destinazione": "Ragione Sociale o Nome Esercente e Città se visibile",
-      "importo": 0.00,
-      "categoria_suggerita": "Bar/Rist/Alb" oppure "Parcheggio/Taxi" oppure "Carburante" oppure "Telepass" oppure "Nolo" oppure "Altro",
-      "pagamento_suggerito": "CC" oppure "Contanti" oppure "Carta Carburante",
-      "note": "Eventuale breve descrizione o dettagli rilevati"
-    }
-    
-    Se la data non è visibile, imposta la data di oggi.
-    Se l'importo contiene la virgola, convertilo in numero float con punto.
-    Restituisci ESCLUSIVAMENTE il JSON puro senza markdown o testo aggiuntivo.
-    """
+        pil_img = ImageOps.exif_transpose(pil_img).convert("L")  # Scala di grigi ottimizzata per OCR
+        
+        # Estrazione testo con Tesseract (Lingua italiana)
+        text = pytesseract.image_to_string(pil_img, lang='ita')
+        
+        # 1. Estrazione Data (Cerca pattern DD/MM/YYYY o DD-MM-YY)
+        data_str = datetime.now().strftime("%Y-%m-%d")
+        date_matches = re.findall(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b', text)
+        if date_matches:
+            d, m, y = date_matches[0]
+            if len(y) == 2:
+                y = "20" + y
+            try:
+                parsed_dt = datetime(int(y), int(m), int(d))
+                data_str = parsed_dt.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
 
-    try:
-        client = Groq(api_key=api_key)
-        base64_image = base64.b64encode(file_bytes).decode('utf-8')
+        # 2. Estrazione Importo (Cerca valori decimali con virgola o punto)
+        importo = 0.0
+        lines = text.split('\n')
+        total_candidates = []
+        
+        # Trova tutte le cifre decimali nello scontrino (es. 12,50 o 12.50)
+        all_amounts = re.findall(r'\b\d+[\.,]\d{2}\b', text)
+        if all_amounts:
+            floats = [float(amt.replace(',', '.')) for amt in all_amounts]
+            
+            # Cerca se qualche riga contiene la parola "totale" o simili
+            for line in lines:
+                if any(k in line.lower() for k in ['totale', 'tot', 'eur', '€', 'importo', 'somma', 'euro']):
+                    line_amounts = re.findall(r'\d+[\.,]\d{2}', line)
+                    if line_amounts:
+                        for la in line_amounts:
+                            total_candidates.append(float(la.replace(',', '.')))
+            
+            if total_candidates:
+                importo = max(total_candidates)
+            else:
+                importo = max(floats) if floats else 0.0
 
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct", # Modello multimediale avanzato supportato da Groq
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            response_format={"type": "json_object"}
-        )
+        # 3. Estrazione Esercente / Destinazione (Prende la prima riga valida)
+        destinazione = "Esercente Sconosciuto"
+        valid_lines = [l.strip() for l in lines if len(l.strip()) > 3]
+        for vl in valid_lines[:4]:
+            if not re.match(r'^[\d\W]+$', vl) and not any(w in vl.lower() for w in ['ricevuta', 'scontrino', 'fattura', 'via', 'piazza', 'tel']):
+                destinazione = vl
+                break
 
-        clean_text = response.choices[0].message.content.strip()
-        parsed_data = json.loads(clean_text)
-        return parsed_data
+        # 4. Categoria e Metodo basati su parole chiave
+        text_lower = text.lower()
+        categoria_suggerita = "Altro"
+        pagamento_suggerito = "Contanti"
+
+        if any(k in text_lower for k in ['benzina', 'gasolio', 'q8', 'eni', 'agip', 'tamoil', 'shell', 'carburante', 'fuel', 'distributore']):
+            categoria_suggerita = "Carburante"
+            pagamento_suggerito = "Carta Carburante"
+        elif any(k in text_lower for k in ['ristorante', 'pizzeria', 'bar', 'trattoria', 'osteria', 'caffe', 'coffee', 'food', 'pranzo', 'cena', 'ristoro']):
+            categoria_suggerita = "Bar/Rist/Alb"
+            pagamento_suggerito = "CC"
+        elif any(k in text_lower for k in ['parcheggio', 'sosta', 'parking', 'garage']):
+            categoria_suggerita = "Parcheggio/Taxi"
+            pagamento_suggerito = "Contanti"
+        elif any(k in text_lower for k in ['telepass', 'autostrade', 'pedaggio']):
+            categoria_suggerita = "Telepass"
+
+        if any(k in text_lower for k in ['carta', 'bancomat', 'pos', 'visa', 'mastercard', 'contactless', 'pagobancomat']):
+            pagamento_suggerito = "CC"
+
+        return {
+            "data": data_str,
+            "destinazione": destinazione[:40],
+            "importo": round(importo, 2),
+            "categoria_suggerita": categoria_suggerita,
+            "pagamento_suggerito": pagamento_suggerito,
+            "note": text.replace('\n', ' ')[:120]  # Estratto del testo come nota
+        }
 
     except Exception as e:
-        st.error(f"❌ Errore durante l'analisi AI con Groq: {e}")
+        st.error(f"❌ Errore durante l'elaborazione OCR locale: {e}")
         return None
 
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
@@ -457,7 +482,7 @@ if "upload_key" not in st.session_state:
 if "ai_extracted_data" not in st.session_state:
     st.session_state["ai_extracted_data"] = {}
 
-# --- TAB 1: REGISTRAZIONE SMART CON AI ---
+# --- TAB 1: REGISTRAZIONE SMART CON OCR ---
 with tab1:
     st.subheader("Registra Nuova Spesa")
     st.markdown("#### Step 1: Carica Allegato (Foto o PDF)")
@@ -513,9 +538,9 @@ with tab1:
             }
 
     if prepared_file:
-        if st.button("🤖 Analizza Allegato con Groq", type="secondary", use_container_width=True):
-            with st.spinner("Estraggo i dati dalla ricevuta con Groq AI..."):
-                extracted = analyze_receipt_with_groq(prepared_file["bytes"], prepared_file["mime"])
+        if st.button("🔍 Estrai Testo con OCR Locale", type="secondary", use_container_width=True):
+            with st.spinner("Estrazione testo e riconoscimento dati in corso..."):
+                extracted = analyze_receipt_with_tesseract_ocr(prepared_file["bytes"], prepared_file["mime"])
                 if extracted:
                     st.session_state["ai_extracted_data"] = extracted
                     st.success("✅ Dati estratti con successo! Verifica e conferma i campi qui sotto.")
