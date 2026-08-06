@@ -148,7 +148,7 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION (SDK GOOGLE-GENAI) ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza il nuovo SDK google-genai provando i modelli ufficiali ed evitando errori 404."""
+    """Utilizza il nuovo SDK google-genai fermandosi se rileva limiti di quota per evitare falsi errori 404."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
@@ -175,12 +175,11 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     try:
         client = genai.Client(api_key=api_key)
 
-        # Nomi modello ufficiali riconosciuti dall'API v1/v1beta del nuovo SDK
+        # Modelli principali 100% supportati dal Free Tier
         candidate_models = [
+            "gemini-1.5-flash",
             "gemini-2.0-flash",
-            "gemini-1.5-flash-001",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-pro-001"
+            "gemini-1.5-flash-8b"
         ]
 
         last_error = None
@@ -207,12 +206,19 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
 
             except Exception as e_model:
                 last_error = e_model
+                err_str = str(e_model)
+                
+                # Interrompiamo il ciclo immediatamente se è un limite di quota.
+                # Non ha senso provare altri modelli (generando errori 404), Google ha bloccato le chiamate temporaneamente.
+                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                    break
+                
                 continue
 
-        # Se nessun modello ha risposto
+        # Gestione del messaggio di errore in caso nessun modello vada a buon fine
         err_msg = str(last_error)
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
-            st.warning("⏳ **Quota limite raggiunta.** Attendi 30-60 secondi prima di riprovare.")
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
+            st.warning("⏳ **Quota limite raggiunta.** Il piano gratuito consente un numero limitato di richieste. Attendi 60 secondi prima di scansionare un nuovo documento.")
         else:
             st.error(f"❌ Dettaglio Errore API Google: {last_error}")
         return None
