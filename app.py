@@ -472,19 +472,18 @@ with tab1:
             # Opzione per disattivare il crop se si riscontrano problemi su iOS
             enable_crop = st.checkbox("✂️ Attiva ritaglio/crop immagine", value=True)
 
-            if enable_crop:
+           if enable_crop:
                 st.caption("📱 *Muovi la selezione per isolare lo scontrino:*")
                 cropped_img = st_cropper(
                     img,
                     realtime_update=True,
                     box_color="#00FF00",
-                    aspect_ratio=None,
-                    max_outline=500
+                    aspect_ratio=None
                 )
                 cropped_bytes = optimize_pil_image(cropped_img)
             else:
                 cropped_bytes = optimize_pil_image(img)
-                st.image(cropped_bytes, caption="Foto scontrino intera", use_container_width=True)
+                st.image(cropped_bytes, caption="Foto scontrino intera", width="stretch")
 
             prepared_file = {
                 "bytes": cropped_bytes,
