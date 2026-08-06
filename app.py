@@ -1,7 +1,7 @@
 import os
 import io
 import json
-import time
+import base64
 from datetime import datetime
 import requests
 import pandas as pd
@@ -12,8 +12,8 @@ import streamlit as st
 from streamlit_cropper import st_cropper
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
-from google import genai
-from google.genai import types
+from pdf2image import convert_from_bytes
+from groq import Groq
 
 # ReportLab imports per PDF
 from reportlab.lib.pagesizes import A4
@@ -92,10 +92,9 @@ PAGAMENTI_LISTA = ["CC (Carta)", "Contanti", "Carta Carburante"]
 FILL_ORANGE = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
 FILL_YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
 
-# --- UTILITY FOTO OTTIMIZZATE PER TOKEN SAVING & STORAGE ---
+# --- UTILITY FOTO OTTIMIZZATE ---
 
-def optimize_pil_image(pil_img, max_dimension=800, quality=65):
-    """Riduce la risoluzione dell'immagine a max 800px per rientrare nei limiti token del Free Tier."""
+def optimize_pil_image(pil_img, max_dimension=1000, quality=75):
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
         pil_img = pil_img.convert("RGB")
@@ -145,18 +144,31 @@ def delete_photo_from_storage(public_url):
     except Exception as e:
         st.warning(f"Impossibile eliminare il file dallo Storage: {e}")
 
-# --- ANALISI ALLEGATO CON GEMINI VISION (SDK GOOGLE-GENAI) ---
+# --- ANALISI ALLEGATO CON GROQ AI ---
 
-def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza il nuovo SDK google-genai fermandosi se rileva limiti di quota per evitare falsi errori 404."""
-    api_key = st.secrets.get("GEMINI_API_KEY")
+def analyze_receipt_with_groq(file_bytes, mime_type):
+    """Utilizza Groq API (Llama Vision) per estrarre i dati della spesa in formato JSON."""
+    api_key = st.secrets.get("GROQ_API_KEY")
     if not api_key:
-        st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
+        st.error("⚠️ Chiave 'GROQ_API_KEY' non trovata nei secrets di Streamlit!")
         return None
+
+    # Se viene caricato un PDF, convertiamo la prima pagina in JPEG per consentire l'analisi visiva
+    if mime_type == "application/pdf":
+        try:
+            images = convert_from_bytes(file_bytes)
+            if images:
+                img_byte_arr = io.BytesIO()
+                images[0].save(img_byte_arr, format='JPEG')
+                file_bytes = img_byte_arr.getvalue()
+                mime_type = "image/jpeg"
+        except Exception as e:
+            st.error(f"❌ Errore nella conversione del PDF: {e}")
+            return None
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
-    Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati in formato JSON strictly formattato:
+    Analizza questa ricevuta/scontrino/fattura ed estrai i seguenti dati restituendo un oggetto JSON con queste esatte chiavi:
     
     {
       "data": "YYYY-MM-DD",
@@ -169,62 +181,38 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     
     Se la data non è visibile, imposta la data di oggi.
     Se l'importo contiene la virgola, convertilo in numero float con punto.
-    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
+    Restituisci ESCLUSIVAMENTE il JSON puro senza markdown o testo aggiuntivo.
     """
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = Groq(api_key=api_key)
+        base64_image = base64.b64encode(file_bytes).decode('utf-8')
 
-        # Modelli principali 100% supportati dal Free Tier
-        candidate_models = [
-            "gemini-1.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash-8b"
-        ]
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct", # Modello multimediale avanzato supportato da Groq
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            response_format={"type": "json_object"}
+        )
 
-        last_error = None
-
-        for model_name in candidate_models:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=[
-                        types.Part.from_bytes(
-                            data=file_bytes,
-                            mime_type=mime_type,
-                        ),
-                        prompt,
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json"
-                    )
-                )
-
-                clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-                parsed_data = json.loads(clean_text)
-                return parsed_data
-
-            except Exception as e_model:
-                last_error = e_model
-                err_str = str(e_model)
-                
-                # Interrompiamo il ciclo immediatamente se è un limite di quota.
-                # Non ha senso provare altri modelli (generando errori 404), Google ha bloccato le chiamate temporaneamente.
-                if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
-                    break
-                
-                continue
-
-        # Gestione del messaggio di errore in caso nessun modello vada a buon fine
-        err_msg = str(last_error)
-        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg or "quota" in err_msg.lower():
-            st.warning("⏳ **Quota limite raggiunta.** Il piano gratuito consente un numero limitato di richieste. Attendi 60 secondi prima di scansionare un nuovo documento.")
-        else:
-            st.error(f"❌ Dettaglio Errore API Google: {last_error}")
-        return None
+        clean_text = response.choices[0].message.content.strip()
+        parsed_data = json.loads(clean_text)
+        return parsed_data
 
     except Exception as e:
-        st.error(f"❌ Errore Client Gemini: {e}")
+        st.error(f"❌ Errore durante l'analisi AI con Groq: {e}")
         return None
 
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
@@ -525,9 +513,9 @@ with tab1:
             }
 
     if prepared_file:
-        if st.button("🤖 Analizza Allegato con AI", type="secondary", use_container_width=True):
-            with st.spinner("Estraggo i dati dalla ricevuta con Gemini AI..."):
-                extracted = analyze_receipt_with_gemini(prepared_file["bytes"], prepared_file["mime"])
+        if st.button("🤖 Analizza Allegato con Groq", type="secondary", use_container_width=True):
+            with st.spinner("Estraggo i dati dalla ricevuta con Groq AI..."):
+                extracted = analyze_receipt_with_groq(prepared_file["bytes"], prepared_file["mime"])
                 if extracted:
                     st.session_state["ai_extracted_data"] = extracted
                     st.success("✅ Dati estratti con successo! Verifica e conferma i campi qui sotto.")
