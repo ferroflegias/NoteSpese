@@ -59,7 +59,7 @@ supabase = init_supabase()
 
 # --- INIZIALIZZAZIONE GEMINI AI ---
 GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
-if GEMINI_KEY:
+if GEMINI_KEY and hasattr(genai, "configure"):
     genai.configure(api_key=GEMINI_KEY)
 
 # --- COSTANTI ---
@@ -151,14 +151,15 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini 2.5 Flash / 2.0 Flash con gestione nativa del Rate Limit (Errore 429)."""
-    
+    """Utilizza Gemini 2.5/2.0 Flash con supporto modelli aggiornati e gestione quota 429."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
         return None
 
-    genai.configure(api_key=api_key)
+    # Configurazione sicura
+    if hasattr(genai, "configure"):
+        genai.configure(api_key=api_key)
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
@@ -182,7 +183,7 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         "data": file_bytes
     }
 
-    # Prova esclusivamente i modelli attivi v2/v2.5
+    # Prova in sequenza i modelli attivi
     candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
     for model_name in candidate_models:
@@ -200,11 +201,11 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
         except Exception as e:
             err_msg = str(e)
             if "429" in err_msg or "Quota exceeded" in err_msg:
-                st.warning(f"⏳ **Limite di frequenza raggiunto su `{model_name}`.** Attendi circa 30-60 secondi prima di inviare una nuova richiesta AI.")
+                st.warning(f"⏳ **Limite di frequenza raggiunto.** Attendi circa 30-60 secondi prima di inviare una nuova richiesta AI.")
                 return None
             continue
 
-    st.error("❌ Errore durante l'analisi AI. Puoi comunque inserire i dati manualmente nel form sottostante.")
+    st.error("❌ Impossibile completare l'analisi con Gemini. Puoi compilare manualmente i dati nel modulo sottostante.")
     return None
     
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
