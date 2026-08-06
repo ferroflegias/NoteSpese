@@ -57,11 +57,6 @@ def init_supabase() -> Client:
 
 supabase = init_supabase()
 
-# --- INIZIALIZZAZIONE GEMINI AI ---
-GEMINI_KEY = st.secrets.get("GEMINI_API_KEY")
-if GEMINI_KEY and hasattr(genai, "configure"):
-    genai.configure(api_key=GEMINI_KEY)
-
 # --- COSTANTI ---
 BUCKET_NAME = "allegati-spese"
 EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
@@ -151,15 +146,11 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini 2.5/2.0 Flash con supporto modelli aggiornati e gestione quota 429."""
+    """Utilizza il nuovo SDK google-genai (supporta chiavi AQ. e AIzaSy)."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
         return None
-
-    # Configurazione sicura
-    if hasattr(genai, "configure"):
-        genai.configure(api_key=api_key)
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
@@ -176,37 +167,38 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     
     Se la data non è visibile, imposta la data di oggi.
     Se l'importo contiene la virgola, convertilo in numero float con punto.
+    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
     """
-    
-    content_part = {
-        "mime_type": mime_type,
-        "data": file_bytes
-    }
 
-    # Prova in sequenza i modelli attivi
-    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    try:
+        # Inizializzazione Client del nuovo SDK
+        client = genai.Client(api_key=api_key)
 
-    for model_name in candidate_models:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                generation_config={"response_mime_type": "application/json"}
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                types.Part.from_bytes(
+                    data=file_bytes,
+                    mime_type=mime_type,
+                ),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
             )
-            response = model.generate_content([prompt, content_part])
-            
-            clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-            parsed_data = json.loads(clean_text)
-            return parsed_data
+        )
 
-        except Exception as e:
-            err_msg = str(e)
-            if "429" in err_msg or "Quota exceeded" in err_msg:
-                st.warning(f"⏳ **Limite di frequenza raggiunto.** Attendi circa 30-60 secondi prima di inviare una nuova richiesta AI.")
-                return None
-            continue
+        clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        parsed_data = json.loads(clean_text)
+        return parsed_data
 
-    st.error("❌ Impossibile completare l'analisi con Gemini. Puoi compilare manualmente i dati nel modulo sottostante.")
-    return None
+    except Exception as e:
+        err_msg = str(e)
+        if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+            st.warning("⏳ **Limite di frequenza o quota temporaneamente superato.** Attendi circa 30-60 secondi prima di riprovare.")
+        else:
+            st.error(f"❌ Errore durante l'analisi AI: {e}")
+        return None
     
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
