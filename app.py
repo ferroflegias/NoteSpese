@@ -469,10 +469,9 @@ with tab1:
             img = Image.open(uploaded_image)
             img = ImageOps.exif_transpose(img)
 
-            # Opzione per disattivare il crop se si riscontrano problemi su iOS
             enable_crop = st.checkbox("✂️ Attiva ritaglio/crop immagine", value=True)
 
-           if enable_crop:
+            if enable_crop:
                 st.caption("📱 *Muovi la selezione per isolare lo scontrino:*")
                 cropped_img = st_cropper(
                     img,
@@ -483,7 +482,7 @@ with tab1:
                 cropped_bytes = optimize_pil_image(cropped_img)
             else:
                 cropped_bytes = optimize_pil_image(img)
-                st.image(cropped_bytes, caption="Foto scontrino intera", width="stretch")
+                st.image(cropped_bytes, caption="Foto scontrino intera", use_container_width=True)
 
             prepared_file = {
                 "bytes": cropped_bytes,
@@ -638,7 +637,7 @@ with tab1:
             
             st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
-
+            
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
