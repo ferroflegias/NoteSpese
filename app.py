@@ -11,7 +11,8 @@ import streamlit as st
 from streamlit_cropper import st_cropper
 from supabase import create_client, Client
 from pypdf import PdfReader, PdfWriter
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ReportLab imports per PDF
 from reportlab.lib.pagesizes import A4
@@ -150,16 +151,11 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza Gemini AI per estrarre i dati dallo scontrino in formato JSON."""
-    
-    # 1. Verifica presenza chiave API nei secrets
+    """Utilizza il nuovo SDK google-genai con supporto per chiavi AQ. e AIzaSy."""
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
         return None
-
-    # Re-inizializzazione per sicurezza
-    genai.configure(api_key=api_key)
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
@@ -176,33 +172,34 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     
     Se la data non è visibile, imposta la data di oggi.
     Se l'importo contiene la virgola, convertilo in numero float con punto.
+    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
     """
-    
-    content_part = {
-        "mime_type": mime_type,
-        "data": file_bytes
-    }
 
-    # Prova i modelli standard Google AI Studio
-    for model_name in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-        try:
-            model = genai.GenerativeModel(
-                model_name=model_name,
-                generation_config={"response_mime_type": "application/json"}
+    try:
+        # Inizializza il nuovo client con la tua chiave (supporta prefissi AQ. e AIzaSy)
+        client = genai.Client(api_key=api_key)
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash', # Modello ottimizzato di ultima generazione
+            contents=[
+                types.Part.from_bytes(
+                    data=file_bytes,
+                    mime_type=mime_type,
+                ),
+                prompt,
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
             )
-            response = model.generate_content([prompt, content_part])
-            
-            clean_text = response.text.strip()
-            parsed_data = json.loads(clean_text)
-            return parsed_data
+        )
 
-        except Exception as e:
-            # Stampa l'errore reale per facilitare il debug
-            st.warning(f"Tentativo con modello `{model_name}` fallito: {e}")
-            continue
+        clean_text = response.text.strip()
+        parsed_data = json.loads(clean_text)
+        return parsed_data
 
-    st.error("❌ Impossibile completare l'analisi con Gemini. Verifica i messaggi sopra.")
-    return None
+    except Exception as e:
+        st.error(f"❌ Errore durante l'analisi AI: {e}")
+        return None
     
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
