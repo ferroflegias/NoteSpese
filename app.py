@@ -151,11 +151,14 @@ def delete_photo_from_storage(public_url):
 # --- ANALISI ALLEGATO CON GEMINI VISION ---
 
 def analyze_receipt_with_gemini(file_bytes, mime_type):
-    """Utilizza il nuovo SDK google-genai con supporto per chiavi AQ. e AIzaSy."""
+    """Utilizza Gemini 2.5 Flash / 2.0 Flash con gestione nativa del Rate Limit (Errore 429)."""
+    
     api_key = st.secrets.get("GEMINI_API_KEY")
     if not api_key:
         st.error("⚠️ Chiave 'GEMINI_API_KEY' non trovata nei secrets di Streamlit!")
         return None
+
+    genai.configure(api_key=api_key)
 
     prompt = """
     Sei un assistente per la gestione delle note spese aziendali italiane.
@@ -172,34 +175,37 @@ def analyze_receipt_with_gemini(file_bytes, mime_type):
     
     Se la data non è visibile, imposta la data di oggi.
     Se l'importo contiene la virgola, convertilo in numero float con punto.
-    Restituisci ESCLUSIVAMENTE il JSON senza formattazione Markdown o blocchi di codice.
     """
+    
+    content_part = {
+        "mime_type": mime_type,
+        "data": file_bytes
+    }
 
-    try:
-        # Inizializza il nuovo client con la tua chiave (supporta prefissi AQ. e AIzaSy)
-        client = genai.Client(api_key=api_key)
+    # Prova esclusivamente i modelli attivi v2/v2.5
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
 
-        response = client.models.generate_content(
-            model='gemini-2.5-flash', # Modello ottimizzato di ultima generazione
-            contents=[
-                types.Part.from_bytes(
-                    data=file_bytes,
-                    mime_type=mime_type,
-                ),
-                prompt,
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+    for model_name in candidate_models:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                generation_config={"response_mime_type": "application/json"}
             )
-        )
+            response = model.generate_content([prompt, content_part])
+            
+            clean_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+            parsed_data = json.loads(clean_text)
+            return parsed_data
 
-        clean_text = response.text.strip()
-        parsed_data = json.loads(clean_text)
-        return parsed_data
+        except Exception as e:
+            err_msg = str(e)
+            if "429" in err_msg or "Quota exceeded" in err_msg:
+                st.warning(f"⏳ **Limite di frequenza raggiunto su `{model_name}`.** Attendi circa 30-60 secondi prima di inviare una nuova richiesta AI.")
+                return None
+            continue
 
-    except Exception as e:
-        st.error(f"❌ Errore durante l'analisi AI: {e}")
-        return None
+    st.error("❌ Errore durante l'analisi AI. Puoi comunque inserire i dati manualmente nel form sottostante.")
+    return None
     
 # --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
 
