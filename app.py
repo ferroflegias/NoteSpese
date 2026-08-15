@@ -2,6 +2,7 @@ import os
 import io
 import json
 import re
+import base64
 from datetime import datetime, timedelta
 import requests
 import pandas as pd
@@ -218,14 +219,14 @@ def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type, is_personal=False)
             elif any(k in text_lower for k in ['esselunga', 'conad', 'coop', 'lidl', 'supermercato']):
                 categoria_suggerita = "Spesa"
         else:
-            categoria_suggerita = "Altro"
+            categoria_suggerita = "ALTRO"
             pagamento_suggerito = "Contanti"
             if any(k in text_lower for k in ['benzina', 'gasolio', 'q8', 'eni', 'agip']):
-                categoria_suggerita = "Carburante"
+                categoria_suggerita = "CARBURANTE_CC"
                 pagamento_suggerito = "Carta Carburante"
             elif any(k in text_lower for k in ['ristorante', 'pizzeria', 'bar', 'pranzo', 'cena']):
-                categoria_suggerita = "Bar/Rist/Alb"
-                pagamento_suggerito = "CC"
+                categoria_suggerita = "RISTORANTI_CC"
+                pagamento_suggerito = "CC (Carta)"
 
         return {
             "data": data_str,
@@ -239,6 +240,237 @@ def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type, is_personal=False)
     except Exception as e:
         st.error(f"❌ Errore OCR: {e}")
         return None
+
+# --- GENERAZIONE DOCUMENTI (EXCEL & PDF) ---
+
+def genera_excel(anno, modo, m_start, m_end):
+    if not os.path.exists(EXCEL_TEMPLATE):
+        st.error(f"File modello '{EXCEL_TEMPLATE}' non trovato!")
+        return None
+
+    wb = openpyxl.load_workbook(EXCEL_TEMPLATE)
+    ROW_OFFSET = 5
+
+    for m in range(m_start, m_end + 1):
+        nome_foglio = MANDI_NOMI[m - 1]
+        if nome_foglio not in wb.sheetnames:
+            continue
+
+        ws = wb[nome_foglio]
+        start_date = f"{anno}-{m:02d}-01"
+        end_date = f"{anno+1}-01-01" if m == 12 else f"{anno}-{m+1:02d}-01"
+
+        response = supabase.table("spese") \
+            .select("*") \
+            .gte("data", start_date) \
+            .lt("data", end_date) \
+            .execute()
+        
+        spese = response.data
+
+        for spesa in spese:
+            d_str = spesa["data"]
+            dest = spesa.get("destinazione")
+            scopo = spesa.get("scopo")
+            cat_key = spesa.get("categoria")
+            imp = spesa.get("importo", 0.0)
+            note = spesa.get("note")
+            is_foreign = spesa.get("valuta_straniera", 0)
+
+            dt = datetime.strptime(d_str, "%Y-%m-%d")
+            giorno = dt.day
+            target_row = giorno + ROW_OFFSET
+
+            if dest:
+                curr_dest = str(ws.cell(row=target_row, column=3).value or "").strip()
+                if not curr_dest:
+                    ws.cell(row=target_row, column=3, value=dest)
+                else:
+                    dest_list = [d.strip() for d in curr_dest.split('\\')]
+                    if dest not in dest_list:
+                        ws.cell(row=target_row, column=3, value=f"{curr_dest}\\{dest}")
+
+            if scopo:
+                curr_scopo = str(ws.cell(row=target_row, column=4).value or "").strip()
+                if not curr_scopo:
+                    ws.cell(row=target_row, column=4, value=scopo)
+                else:
+                    scopo_list = [s.strip() for s in curr_scopo.split('\\')]
+                    if scopo not in scopo_list:
+                        ws.cell(row=target_row, column=4, value=f"{curr_scopo}\\{scopo}")
+
+            if note:
+                curr_note = str(ws.cell(row=target_row, column=15).value or "").strip()
+                if not curr_note:
+                    ws.cell(row=target_row, column=15, value=note)
+                else:
+                    note_list = [n.strip() for n in curr_note.split(';')]
+                    if note not in note_list:
+                        ws.cell(row=target_row, column=15, value=f"{curr_note}; {note}")
+
+            col_idx = CATEGORIA_COLONNA.get(cat_key)
+            if col_idx and imp:
+                imp_val = round(float(imp), 2)
+                cell = ws.cell(row=target_row, column=col_idx)
+                curr_val = cell.value
+
+                if curr_val is None or curr_val == "":
+                    cell.value = imp_val
+                    if is_foreign == 1:
+                        cell.fill = FILL_ORANGE
+                elif isinstance(curr_val, (int, float)):
+                    cell.value = f"={curr_val}+{imp_val}"
+                    if is_foreign == 1 or cell.fill == FILL_ORANGE or cell.fill == FILL_YELLOW:
+                        cell.fill = FILL_YELLOW
+                elif isinstance(curr_val, str) and curr_val.startswith("="):
+                    cell.value = f"{curr_val}+{imp_val}"
+                    if is_foreign == 1 or cell.fill == FILL_ORANGE or cell.fill == FILL_YELLOW:
+                        cell.fill = FILL_YELLOW
+
+    if modo == 'anno':
+        output_filename = f"Note_Spese_Anno_{anno}.xlsx"
+    elif modo == 'range':
+        output_filename = f"Note_Spese_{MANDI_NOMI[m_start-1]}_{MANDI_NOMI[m_end-1]}_{anno}.xlsx"
+    else:
+        output_filename = f"Note_Spese_{MANDI_NOMI[m_start-1]}_{anno}.xlsx"
+
+    wb.save(output_filename)
+    return output_filename
+
+def genera_pdf_allegati(anno, mese):
+    start_date = f"{anno}-{mese:02d}-01"
+    end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
+
+    response = supabase.table("spese") \
+        .select("*") \
+        .gte("data", start_date) \
+        .lt("data", end_date) \
+        .order("data", desc=False) \
+        .order("id", desc=False) \
+        .execute()
+        
+    spese = [s for s in response.data if s.get("allegato_path")]
+
+    if not spese:
+        return None
+
+    pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}.pdf"
+    doc = SimpleDocTemplate(
+        pdf_filename,
+        pagesize=A4,
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=20,
+        bottomMargin=20
+    )
+
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Heading1'], fontSize=16, leading=20, alignment=1)
+    card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
+
+    story = []
+    story.append(Paragraph(f"<b>Allegati Spese (Grayscale) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Spacer(1, 15))
+
+    cells = []
+    pdf_files_to_merge = []
+
+    for spesa in spese:
+        url = spesa["allegato_path"]
+        is_pdf = url.lower().endswith(".pdf")
+
+        d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+        dest = spesa.get('destinazione') or '-'
+        cat = spesa.get('categoria') or '-'
+        imp = f"€ {spesa.get('importo', 0.0):.2f}"
+        note = spesa.get('note') or ''
+
+        text_content = f"""
+        <b>Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
+        <b>Destinazione:</b> {dest}<br/>
+        <b>Cat:</b> {cat}<br/>
+        """
+        if note:
+            text_content += f"<b>Note:</b> {note}"
+
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                if is_pdf:
+                    pdf_files_to_merge.append({
+                        "bytes": resp.content,
+                        "info": f"Allegato PDF - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
+                    })
+                    cell_elements = [
+                        Paragraph(text_content, card_body_style),
+                        Spacer(1, 4),
+                        Paragraph("📄 <i>[Documento PDF allegato in coda al report]</i>", card_body_style)
+                    ]
+                    cells.append(cell_elements)
+                else:
+                    img_stream = io.BytesIO(resp.content)
+                    pil_img = Image.open(img_stream)
+                    pil_img = ImageOps.exif_transpose(pil_img)
+                    pil_img = pil_img.convert("L")
+                    
+                    gray_stream = io.BytesIO()
+                    pil_img.save(gray_stream, format="JPEG")
+                    gray_stream.seek(0)
+
+                    max_w, max_h = 240, 260
+                    w, h = pil_img.size
+                    ratio = min(max_w / w, max_h / h)
+                    final_w, final_h = int(w * ratio), int(h * ratio)
+
+                    rl_img = RLImage(gray_stream, width=final_w, height=final_h)
+
+                    cell_elements = [
+                        Paragraph(text_content, card_body_style),
+                        Spacer(1, 4),
+                        rl_img
+                    ]
+                    cells.append(cell_elements)
+
+        except Exception:
+            continue
+
+    grid_data = []
+    for i in range(0, len(cells), 2):
+        row = [cells[i]]
+        if i + 1 < len(cells):
+            row.append(cells[i+1])
+        else:
+            row.append("")
+        grid_data.append(row)
+
+    if grid_data:
+        t = Table(grid_data, colWidths=[275, 275])
+        t.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ]))
+        story.append(t)
+
+    doc.build(story)
+
+    if pdf_files_to_merge:
+        merger = PdfWriter()
+        merger.append(pdf_filename)
+
+        for pdf_item in pdf_files_to_merge:
+            pdf_bytes = io.BytesIO(pdf_item["bytes"])
+            merger.append(pdf_bytes)
+
+        merged_pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}_Completo.pdf"
+        merger.write(merged_pdf_filename)
+        merger.close()
+        
+        if os.path.exists(pdf_filename):
+            os.remove(pdf_filename)
+        return merged_pdf_filename
+
+    return pdf_filename
 
 # --- INTERFACCIA STREAMLIT ---
 st.title("🧾 Gestione Note Spese 2026")
@@ -255,7 +487,6 @@ if "ai_extracted_data" not in st.session_state:
 with tab1:
     st.subheader("Registra Nuova Spesa")
     
-    # Selettore tipo spesa
     tipo_spesa = st.radio("Tipo di Spesa", ["💼 Lavoro", "🏡 Personale"], horizontal=True)
     is_personal = (tipo_spesa == "🏡 Personale")
     
@@ -323,7 +554,7 @@ with tab1:
     scopo_input = st.text_input("Why (Scopo)") if not is_personal else ""
 
     st.write("**What (Categoria)**")
-    cat_options = CATEGORIE_PERSONALI if is_personal else ["🍽️ Bar/Rist/Alb", "🅿️ Parcheggio/Taxi", "⛽ Carburante", "🛣️ Telepass", "🚗 Nolo", "Altro"]
+    cat_options = CATEGORIE_PERSONALI if is_personal else CATEGORIE_LAVORO
     
     default_cat_idx = 0
     ai_cat = ai_data.get("categoria_suggerita", "")
@@ -338,7 +569,7 @@ with tab1:
 
     if not is_telepass:
         st.write("**Payment (Metodo Pagamento)**")
-        pay_options = PAGAMENTI_PERSONALI if is_personal else ["💳 CC", "💶 Contanti", "📄⛽ Carta Carburante"]
+        pay_options = PAGAMENTI_PERSONALI if is_personal else PAGAMENTI_LAVORO
         default_pay_idx = 0
         ai_pay = ai_data.get("pagamento_suggerito", "")
         for idx, opt in enumerate(pay_options):
@@ -368,7 +599,6 @@ with tab1:
         else:
             d_str = data_input.strftime("%Y-%m-%d")
             
-            # Workflow allegato: Lavoro lo salva su Supabase bucket, Personale lo scarta (nessun upload)
             file_url = None
             if not is_personal and prepared_file:
                 file_url = upload_file_to_supabase(
@@ -391,26 +621,13 @@ with tab1:
                 }
                 supabase.table("spese_personali").insert(new_record).execute()
             else:
-                if "Bar" in cat_selection:
-                    cat_key = "RISTORANTI_CC" if "CC" in pay_selection else "RISTORANTI_CONTANTI"
-                elif "Parcheggio" in cat_selection:
-                    cat_key = "PARCHEGGI_CC" if "CC" in pay_selection else "PARCHEGGI_CONTANTI"
-                elif "Carburante" in cat_selection:
-                    cat_key = "CARBURANTE_CC" if "CC" in pay_selection else "CARBURANTE_CARTA"
-                elif "Telepass" in cat_selection:
-                    cat_key = "TELEPASS"
-                elif "Nolo" in cat_selection:
-                    cat_key = "NOLO"
-                else:
-                    cat_key = "ALTRO"
-
-                metodo_str = None if cat_key == "TELEPASS" else ("CC (Carta)" if "CC" in pay_selection else ("Contanti" if "Contanti" in pay_selection else "Carta Carburante"))
+                metodo_str = None if cat_selection == "TELEPASS" else pay_selection
 
                 new_record = {
                     "data": d_str,
                     "destinazione": dest_input,
                     "scopo": scopo_input,
-                    "categoria": cat_key,
+                    "categoria": cat_selection,
                     "metodo_pagamento": metodo_str,
                     "importo": importo_input,
                     "km": 0.0,
@@ -420,12 +637,12 @@ with tab1:
                 }
                 supabase.table("spese").insert(new_record).execute()
             
-            # Conferma visiva di avvenuta registrazione
             st.success("✅ **Spesa registrata con successo nel database!**")
             st.session_state["ai_extracted_data"] = {}
             st.session_state["upload_key"] += 1
             time.sleep(1)
-            
+            st.rerun()
+
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
@@ -441,28 +658,65 @@ with tab2:
         data_list = []
 
     if not data_list:
-        st.info("Nessuna spesa memorizzata in questo archivio o tabella vuota.")
+        st.info("Nessuna spesa memorizzata in questo archivio.")
     else:
         df_spese = pd.DataFrame(data_list)
         st.dataframe(df_spese, use_container_width=True)
 
 # --- TAB 3: REPORTISTICA & STATISTICHE PERSONALI ---
 with tab3:
-    st.subheader("📊 Report Spese & Statistiche Personali")
+    st.subheader("📊 Report Spese & Statistiche")
     
-    report_type = st.radio("Tipologia Report", ["Lavoro", "Personale"], horizontal=True)
+    report_type = st.radio("Tipologia Report", ["Lavoro", "Personale"], horizontal=True, key="rep_type")
     
     if report_type == "Lavoro":
-        rep_year = st.number_input("Anno", value=2026, step=1)
-        rep_month = st.selectbox("Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1)
-        start_d, end_d = f"{rep_year}-{rep_month:02d}-01", f"{rep_year+1}-01-01" if rep_month == 12 else f"{rep_year}-{rep_month+1:02d}-01"
-        res = supabase.table("spese").select("*").gte("data", start_d).lt("data", end_d).execute()
-        if res.data:
-            df = pd.DataFrame(res.data)
-            st.metric("Totale Mese Lavoro", f"€ {df['importo'].sum():.2f}")
-            st.dataframe(df.groupby('categoria')['importo'].sum().reset_index(), use_container_width=True)
+        col_rep_year, col_rep_month = st.columns([1, 1])
+        with col_rep_year:
+            rep_year = st.number_input("Anno", value=2026, step=1, key="rep_year_input")
+        with col_rep_month:
+            rep_month = st.selectbox("Mese da analizzare", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1, key="rep_m_input")
+            
+        start_d = f"{rep_year}-{rep_month:02d}-01"
+        end_d = f"{rep_year+1}-01-01" if rep_month == 12 else f"{rep_year}-{rep_month+1:02d}-01"
+        
+        rep_res = supabase.table("spese").select("*").gte("data", start_d).lt("data", end_d).execute()
+        rep_data = rep_res.data
+        
+        if not rep_data:
+            st.info(f"Nessuna spesa trovata per **{MANDI_NOMI[rep_month-1]} {rep_year}**.")
         else:
-            st.info("Nessuna spesa di lavoro trovata.")
+            df_rep = pd.DataFrame(rep_data)
+            totale_mese = df_rep['importo'].sum()
+            spese_telepass = df_rep[df_rep['categoria'] == 'TELEPASS']['importo'].sum()
+            spese_carb_carta = df_rep[df_rep['categoria'] == 'CARBURANTE_CARTA']['importo'].sum()
+            
+            totale_senza_telepass = totale_mese - spese_telepass
+            totale_senza_telepass_e_carb = totale_mese - spese_telepass - spese_carb_carta
+
+            st.markdown(f"### Totali per **{MANDI_NOMI[rep_month-1]} {rep_year}**")
+            m1, m2 = st.columns(2)
+            m1.metric("Totale Generale Mese", f"€ {totale_mese:.2f}")
+            m2.metric("Totale (Senza Telepass)", f"€ {totale_senza_telepass:.2f}")
+            
+            m3, m4, m5 = st.columns(3)
+            m3.metric("Totale (Senza Telepass & Carta Carb.)", f"€ {totale_senza_telepass_e_carb:.2f}")
+            m4.metric("Totale Telepass", f"€ {spese_telepass:.2f}")
+            m5.metric("Totale Carta Carburante", f"€ {spese_carb_carta:.2f}")
+            
+            st.divider()
+            col_c1, col_c2 = st.columns(2)
+            with col_c1:
+                st.markdown("#### Per Categoria")
+                cat_group = df_rep.groupby('categoria')['importo'].agg(['sum', 'count']).reset_index()
+                cat_group.columns = ['Categoria', 'Totale (€)', 'N. Spese']
+                st.dataframe(cat_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
+            with col_c2:
+                st.markdown("#### Per Metodo Pagamento")
+                df_rep_pay = df_rep.copy()
+                df_rep_pay['metodo_pagamento'] = df_rep_pay['metodo_pagamento'].fillna('- (Nessuno)')
+                pay_group = df_rep_pay.groupby('metodo_pagamento')['importo'].agg(['sum', 'count']).reset_index()
+                pay_group.columns = ['Metodo', 'Totale (€)', 'N. Spese']
+                st.dataframe(pay_group.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
     else:
         st.markdown("### 🏡 Statistiche Spese Personali")
         res_pers = supabase.table("spese_personali").select("*").execute()
@@ -470,7 +724,6 @@ with tab3:
             df_p = pd.DataFrame(res_pers.data)
             df_p['data'] = pd.to_datetime(df_p['data'])
             
-            # Filtro mensile / settimanale
             oggi = datetime.now()
             mese_corrente = df_p[df_p['data'].dt.month == oggi.month]
             mese_precedente = df_p[df_p['data'].dt.month == (oggi.month - 1 if oggi.month > 1 else 12)]
@@ -480,18 +733,79 @@ with tab3:
             
             col_m1, col_m2 = st.columns(2)
             col_m1.metric("Spese Mese Corrente", f"€ {tot_mese_curr:.2f}", delta=f"€ {tot_mese_curr - tot_mese_prev:.2f} vs mese prec.")
+            col_m2.metric("Spese Mese Precedente", f"€ {tot_mese_prev:.2f}")
             
             st.markdown("#### Spese per Categoria (Mese Corrente)")
             if not mese_corrente.empty:
                 cat_sum = mese_corrente.groupby('categoria')['importo'].sum().reset_index()
-                st.dataframe(cat_sum.sort_values(by='importo', ascending=False), hide_index=True, use_container_width=True)
+                cat_sum.columns = ['Categoria', 'Totale (€)']
+                st.dataframe(cat_sum.sort_values(by='Totale (€)', ascending=False), hide_index=True, use_container_width=True)
             else:
-                st.info("Nessuna spesa registrata per il mese corrente.")
+                st.info("Nessuna spesa personale registrata per il mese corrente.")
         else:
             st.info("Nessuna spesa personale registrata.")
 
 # --- TAB 4: ESPORTAZIONE EXCEL & PDF ---
 with tab4:
     st.subheader("📁 Generazione Documenti (Lavoro)")
-    st.info("L'export in Excel e PDF è disponibile esclusivamente per le note spese di lavoro.")
-    # (Codice export invariato dal blocco precedente)
+    
+    col_e1, col_e2 = st.columns(2)
+    with col_e1:
+        anno_exp = st.number_input("Anno Esportazione", value=2026, step=1, key="anno_exp_input")
+    with col_e2:
+        mese_exp_pdf = st.selectbox("Mese per PDF Allegati", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1, key="mese_exp_pdf_input")
+
+    st.divider()
+
+    col_btn1, col_btn2 = st.columns(2)
+
+    with col_btn1:
+        st.markdown("#### 📊 Modello Excel")
+        tipo_exp = st.selectbox("Modalità Excel", ["Mese Singolo", "Range di Mesi", "Anno Completo"], key="tipo_exp_sel")
+        
+        if tipo_exp == "Mese Singolo":
+            m_sel = st.selectbox("Seleziona Mese Excel", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1, key="m_sel_input")
+            m_in, m_fi = m_sel, m_sel
+            modo_str = 'singolo'
+        elif tipo_exp == "Range di Mesi":
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                m_in = st.selectbox("Da Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=0, key="m_in_input")
+            with col_m2:
+                m_fi = st.selectbox("A Mese", range(1, 13), format_func=lambda x: MANDI_NOMI[x-1], index=datetime.now().month - 1, key="m_fi_input")
+            modo_str = 'range'
+        else:
+            m_in, m_fi = 1, 12
+            modo_str = 'anno'
+
+        if st.button("📊 Genera Excel", type="primary", use_container_width=True):
+            res_file = genera_excel(anno_exp, modo_str, m_in, m_fi)
+            if res_file and os.path.exists(res_file):
+                with open(res_file, "rb") as f:
+                    st.download_button(
+                        label="📥 Scarica Excel",
+                        data=f,
+                        file_name=res_file,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
+    with col_btn2:
+        st.markdown("#### 🖼️📄 PDF Allegati Cumulativo")
+        st.caption(f"Unisce immagini e PDF del mese di **{MANDI_NOMI[mese_exp_pdf-1]} {anno_exp}**.")
+        
+        if st.button("🖼️ Genera PDF Completo", type="primary", use_container_width=True):
+            with st.spinner("Generazione PDF allegati in corso..."):
+                pdf_res = genera_pdf_allegati(anno_exp, mese_exp_pdf)
+                
+            if pdf_res and os.path.exists(pdf_res):
+                with open(pdf_res, "rb") as f_pdf:
+                    st.download_button(
+                        label="📥 Scarica PDF Allegati",
+                        data=f_pdf,
+                        file_name=pdf_res,
+                        mime="application/pdf",
+                        use_container_width=True
+                    )
+            else:
+                st.warning("Nessun allegato trovato per il mese selezionato.")
