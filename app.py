@@ -425,19 +425,23 @@ with tab1:
             st.session_state["ai_extracted_data"] = {}
             st.session_state["upload_key"] += 1
             time.sleep(1)
-            st.rerun()
-
+            
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     tipo_archivio = st.radio("Seleziona archivio", ["Lavoro", "Personale"], horizontal=True, key="archivio_radio")
     
     table_name = "spese" if tipo_archivio == "Lavoro" else "spese_personali"
-    response = supabase.table(table_name).select("*").order("data", desc=True).execute()
-    data_list = response.data
+    
+    try:
+        response = supabase.table(table_name).select("*").order("data", desc=True).execute()
+        data_list = response.data
+    except Exception as e:
+        st.error(f"❌ Errore di comunicazione con Supabase: {e}")
+        data_list = []
 
     if not data_list:
-        st.info("Nessuna spesa memorizzata in questo archivio.")
+        st.info("Nessuna spesa memorizzata in questo archivio o tabella vuota.")
     else:
         df_spese = pd.DataFrame(data_list)
         st.dataframe(df_spese, use_container_width=True)
