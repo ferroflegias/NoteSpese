@@ -168,7 +168,6 @@ def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type, is_personal=False)
         pil_img = ImageOps.exif_transpose(pil_img).convert("L")
         text = pytesseract.image_to_string(pil_img, lang='ita')
         
-        # 1. Estrazione Data
         data_str = datetime.now().strftime("%Y-%m-%d")
         date_matches = re.findall(r'\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b', text)
         if date_matches:
@@ -181,7 +180,6 @@ def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type, is_personal=False)
             except ValueError:
                 pass
 
-        # 2. Estrazione Importo
         importo = 0.0
         lines = text.split('\n')
         total_candidates = []
@@ -199,7 +197,6 @@ def analyze_receipt_with_tesseract_ocr(file_bytes, mime_type, is_personal=False)
             else:
                 importo = max(floats) if floats else 0.0
 
-        # 3. Estrazione Esercente
         destinazione = "Esercente Sconosciuto"
         valid_lines = [l.strip() for l in lines if len(l.strip()) > 3]
         for vl in valid_lines[:4]:
@@ -643,7 +640,7 @@ with tab1:
             time.sleep(1)
             st.rerun()
 
-# --- TAB 2: CONSULTAZIONE & MODIFICA ---
+# --- TAB 2: CONSULTAZIONE & MODIFICA (RIPRISTINATO) ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     tipo_archivio = st.radio("Seleziona archivio", ["Lavoro", "Personale"], horizontal=True, key="archivio_radio")
@@ -661,7 +658,105 @@ with tab2:
         st.info("Nessuna spesa memorizzata in questo archivio.")
     else:
         df_spese = pd.DataFrame(data_list)
-        st.dataframe(df_spese, use_container_width=True)
+        
+        st.write("💡 *Clicca su una riga della tabella per selezionarla e modificarla.*")
+        
+        event = st.dataframe(
+            df_spese,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+
+        st.divider()
+        st.subheader("Modifica / Elimina Spesa Selezionata")
+        
+        selected_rows = event.selection.rows if event and hasattr(event, 'selection') else []
+        
+        if selected_rows:
+            selected_index = selected_rows[0]
+            rec = df_spese.iloc[selected_index]
+            record_id = rec['id']
+            
+            st.info(f"Stai modificando il record **ID #{record_id}** ({tipo_archivio}) del {rec['data']}")
+
+            with st.form("edit_form"):
+                e_data = st.date_input("Data", datetime.strptime(str(rec['data']), "%Y-%m-%d"))
+                e_dest = st.text_input("Destinazione", rec.get('destinazione') or "")
+                
+                if tipo_archivio == "Lavoro":
+                    e_scopo = st.text_input("Scopo", rec.get('scopo') or "")
+                    e_cat = st.selectbox("Categoria", CATEGORIE_LAVORO, index=CATEGORIE_LAVORO.index(rec['categoria']) if rec['categoria'] in CATEGORIE_LAVORO else 0)
+                    e_pay_list = ["- (Nessuno)"] + PAGAMENTI_LAVORO
+                    curr_pay = rec.get('metodo_pagamento')
+                    curr_idx = PAGAMENTI_LAVORO.index(curr_pay) + 1 if curr_pay in PAGAMENTI_LAVORO else 0
+                    e_pay = st.selectbox("Pagamento", e_pay_list, index=curr_idx)
+                    e_foreign = st.checkbox("Valuta non-€ (🔣)", value=bool(rec.get('valuta_straniera', 0)))
+                else:
+                    e_scopo = ""
+                    e_cat = st.selectbox("Categoria", CATEGORIE_PERSONALI, index=CATEGORIE_PERSONALI.index(rec['categoria']) if rec['categoria'] in CATEGORIE_PERSONALI else 0)
+                    e_pay_list = ["- (Nessuno)"] + PAGAMENTI_PERSONALI
+                    curr_pay = rec.get('metodo_pagamento')
+                    curr_idx = PAGAMENTI_PERSONALI.index(curr_pay) + 1 if curr_pay in PAGAMENTI_PERSONALI else 0
+                    e_pay = st.selectbox("Pagamento", e_pay_list, index=curr_idx)
+                    e_foreign = False
+
+                e_imp = st.number_input("Importo (€)", value=float(rec['importo']), step=0.5)
+                e_note = st.text_area("Note", rec.get('note') or "")
+
+                if tipo_archivio == "Lavoro":
+                    allegato = rec.get('allegato_path')
+                    if isinstance(allegato, str) and allegato.startswith("http"):
+                        if allegato.lower().endswith(".pdf"):
+                            st.markdown(f"📄 [Visualizza Allegato PDF]({allegato})")
+                        else:
+                            st.image(allegato, caption="Allegato foto", width=250)
+                
+                c_sub, c_del = st.columns([1, 1])
+                with c_sub:
+                    save_mod = st.form_submit_button("💾 Salva Modifiche")
+                with c_del:
+                    delete_mod = st.form_submit_button("🗑️ Elimina Record", type="secondary")
+                
+                if save_mod:
+                    if tipo_archivio == "Lavoro":
+                        updated_record = {
+                            "data": e_data.strftime("%Y-%m-%d"),
+                            "destinazione": e_dest,
+                            "scopo": e_scopo,
+                            "categoria": e_cat,
+                            "metodo_pagamento": None if e_pay == "- (Nessuno)" else e_pay,
+                            "importo": e_imp,
+                            "note": e_note,
+                            "valuta_straniera": 1 if e_foreign else 0
+                        }
+                    else:
+                        updated_record = {
+                            "data": e_data.strftime("%Y-%m-%d"),
+                            "destinazione": e_dest,
+                            "categoria": e_cat,
+                            "metodo_pagamento": None if e_pay == "- (Nessuno)" else e_pay,
+                            "importo": e_imp,
+                            "note": e_note
+                        }
+                    
+                    supabase.table(table_name).update(updated_record).eq("id", int(record_id)).execute()
+                    st.success("Record aggiornato con successo!")
+                    time.sleep(1)
+                    st.rerun()
+                    
+                if delete_mod:
+                    if tipo_archivio == "Lavoro":
+                        photo_url = rec.get('allegato_path')
+                        if photo_url:
+                            delete_photo_from_storage(photo_url)
+
+                    supabase.table(table_name).delete().eq("id", int(record_id)).execute()
+                    st.warning("Record eliminato con successo!")
+                    time.sleep(1)
+                    st.rerun()
+        else:
+            st.caption("👈 Seleziona una riga dalla tabella sopra per visualizzare il modulo di modifica/eliminazione.")
 
 # --- TAB 3: REPORTISTICA & STATISTICHE PERSONALI ---
 with tab3:
