@@ -77,7 +77,7 @@ CATEGORIE_LISTA = [
 
 CATEGORIA_COLONNA = {
     "TELEPASS": 6,               # Colonna F
-    "NOLO": 7,                   # Colonna G
+    "NOLO": 7,                    # Colonna G
     "PARCHEGGI_CONTANTI": 8,     # Colonna H
     "PARCHEGGI_CC": 9,           # Colonna I
     "RISTORANTI_CONTANTI": 10,   # Colonna J
@@ -263,6 +263,8 @@ def genera_excel(anno, modo, m_start, m_end):
             .select("*") \
             .gte("data", start_date) \
             .lt("data", end_date) \
+            .order("data", desc=False) \
+            .order("id", desc=False) \
             .execute()
         
         spese = response.data
@@ -340,6 +342,7 @@ def genera_pdf_allegati(anno, mese):
     start_date = f"{anno}-{mese:02d}-01"
     end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
 
+    # Selezione esplicita di TUTTE le spese ordinate univocamente per data e ID
     response = supabase.table("spese") \
         .select("*") \
         .gte("data", start_date) \
@@ -374,20 +377,23 @@ def genera_pdf_allegati(anno, mese):
     cells = []
     pdf_files_to_merge = []
 
-    for spesa in spese:
+    # Scansione di ogni spesa indipendentemente dalla categoria o metodo di pagamento
+    for idx, spesa in enumerate(spese, start=1):
         url = spesa["allegato_path"]
-        is_pdf = url.lower().endswith(".pdf")
+        is_pdf = str(url).lower().endswith(".pdf")
 
+        rec_id = spesa.get('id', idx)
         d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
         dest = spesa.get('destinazione') or '-'
         cat = spesa.get('categoria') or '-'
+        pay = spesa.get('metodo_pagamento') or 'Non specificato'
         imp = f"€ {spesa.get('importo', 0.0):.2f}"
         note = spesa.get('note') or ''
 
         text_content = f"""
-        <b>Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
+        <b>[#{rec_id}] Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
         <b>Destinazione:</b> {dest}<br/>
-        <b>Cat:</b> {cat}<br/>
+        <b>Cat:</b> {cat} | <b>Pag:</b> {pay}<br/>
         """
         if note:
             text_content += f"<b>Note:</b> {note}"
@@ -398,7 +404,7 @@ def genera_pdf_allegati(anno, mese):
                 if is_pdf:
                     pdf_files_to_merge.append({
                         "bytes": resp.content,
-                        "info": f"Allegato PDF - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
+                        "info": f"Allegato PDF #{rec_id} - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
                     })
                     cell_elements = [
                         Paragraph(text_content, card_body_style),
@@ -430,7 +436,7 @@ def genera_pdf_allegati(anno, mese):
                     ]
                     cells.append(cell_elements)
 
-        except Exception:
+        except Exception as e:
             continue
 
     grid_data = []
@@ -484,6 +490,11 @@ if "ai_extracted_data" not in st.session_state:
 
 # --- TAB 1: REGISTRAZIONE SMART CON OCR ---
 with tab1:
+    # Notifica permanente post-salvataggio
+    if st.session_state.get("show_save_success", False):
+        st.success("🎉 Spesa e allegato salvati con successo su Supabase!")
+        st.session_state["show_save_success"] = False
+
     st.subheader("Registra Nuova Spesa")
     st.markdown("#### Step 1: Carica Allegato (Foto o PDF)")
 
@@ -666,18 +677,19 @@ with tab1:
 
             supabase.table("spese").insert(new_record).execute()
             
+            # Imposta flag per mostrare il messaggio al riavvio della pagina
+            st.session_state["show_save_success"] = True
             st.session_state["input_note"] = ""
             st.session_state["ai_extracted_data"] = {}
             st.session_state["upload_key"] += 1
             
-            st.success("Spesa e allegato salvati con successo su Supabase!")
             st.rerun()
 
 # --- TAB 2: CONSULTAZIONE & MODIFICA ---
 with tab2:
     st.subheader("Archivio Spese Registrate")
     
-    response = supabase.table("spese").select("*").order("data", desc=True).execute()
+    response = supabase.table("spese").select("*").order("data", desc=True).order("id", desc=True).execute()
     data_list = response.data
 
     if not data_list:
