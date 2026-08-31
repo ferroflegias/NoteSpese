@@ -342,7 +342,7 @@ def genera_pdf_allegati(anno, mese):
     start_date = f"{anno}-{mese:02d}-01"
     end_date = f"{anno+1}-01-01" if mese == 12 else f"{anno}-{mese+1:02d}-01"
 
-    # Selezione esplicita di TUTTE le spese ordinate univocamente per data e ID
+    # Recupera esplicitamente TUTTE le spese del mese senza limiti
     response = supabase.table("spese") \
         .select("*") \
         .gte("data", start_date) \
@@ -351,9 +351,13 @@ def genera_pdf_allegati(anno, mese):
         .order("id", desc=False) \
         .execute()
         
-    spese = [s for s in response.data if s.get("allegato_path")]
+    spese = response.data or []
 
-    if not spese:
+    # Filtra solo quelle con un URL allegato non vuoto
+    spese_con_allegato = [s for s in spese if s.get("allegato_path") and str(s.get("allegato_path")).strip() != ""]
+
+    if not spese_con_allegato:
+        st.warning(f"Trovate {len(spese)} spese totali, ma nessuna ha un allegato salvato per {MANDI_NOMI[mese-1]} {anno}.")
         return None
 
     pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}.pdf"
@@ -371,45 +375,44 @@ def genera_pdf_allegati(anno, mese):
     card_body_style = ParagraphStyle('CardBody', parent=styles['Normal'], fontSize=8, leading=10, fontName="Helvetica")
 
     story = []
-    story.append(Paragraph(f"<b>Allegati Spese (Grayscale) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
+    story.append(Paragraph(f"<b>Allegati Spese ({len(spese_con_allegato)} Voci) - {MANDI_NOMI[mese-1]} {anno}</b>", title_style))
     story.append(Spacer(1, 15))
 
     cells = []
     pdf_files_to_merge = []
 
-    # Scansione di ogni spesa indipendentemente dalla categoria o metodo di pagamento
-    for idx, spesa in enumerate(spese, start=1):
-        url = spesa["allegato_path"]
-        is_pdf = str(url).lower().endswith(".pdf")
+    for spesa in spese_con_allegato:
+        url = str(spesa["allegato_path"]).strip()
+        is_pdf = url.lower().split("?")[0].endswith(".pdf")  # Gestisce anche URL con query string
 
-        rec_id = spesa.get('id', idx)
+        rec_id = spesa.get('id', '-')
         d_fmt = datetime.strptime(spesa['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
         dest = spesa.get('destinazione') or '-'
         cat = spesa.get('categoria') or '-'
-        pay = spesa.get('metodo_pagamento') or 'Non specificato'
+        pay = spesa.get('metodo_pagamento') or 'Standard'
         imp = f"€ {spesa.get('importo', 0.0):.2f}"
         note = spesa.get('note') or ''
 
         text_content = f"""
-        <b>[#{rec_id}] Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
+        <b>[ID #{rec_id}] Data:</b> {d_fmt} | <b>Importo:</b> {imp}<br/>
         <b>Destinazione:</b> {dest}<br/>
-        <b>Cat:</b> {cat} | <b>Pag:</b> {pay}<br/>
+        <b>Categoria:</b> {cat} | <b>Pagamento:</b> {pay}<br/>
         """
         if note:
             text_content += f"<b>Note:</b> {note}"
 
         try:
-            resp = requests.get(url, timeout=10)
+            resp = requests.get(url, timeout=20)
             if resp.status_code == 200:
                 if is_pdf:
                     pdf_files_to_merge.append({
                         "bytes": resp.content,
-                        "info": f"Allegato PDF #{rec_id} - Data: {d_fmt} - Destinazione: {dest} - Importo: {imp}"
+                        "info": f"ID #{rec_id} - {d_fmt}"
                     })
                     cell_elements = [
                         Paragraph(text_content, card_body_style),
                         Spacer(1, 4),
-                        Paragraph("📄 <i>[Documento PDF allegato in coda al report]</i>", card_body_style)
+                        Paragraph("📄 <i>[Documento PDF allegato e unito in coda al file]</i>", card_body_style)
                     ]
                     cells.append(cell_elements)
                 else:
@@ -425,7 +428,7 @@ def genera_pdf_allegati(anno, mese):
                     max_w, max_h = 240, 260
                     w, h = pil_img.size
                     ratio = min(max_w / w, max_h / h)
-                    final_w, final_h = int(w * ratio), int(h * ratio)
+                    final_w, final_h = max(1, int(w * ratio)), max(1, int(h * ratio))
 
                     rl_img = RLImage(gray_stream, width=final_w, height=final_h)
 
@@ -435,9 +438,21 @@ def genera_pdf_allegati(anno, mese):
                         rl_img
                     ]
                     cells.append(cell_elements)
+            else:
+                # Mostra nel PDF che l'immagine non è stata scaricata anziché saltare il record
+                cells.append([
+                    Paragraph(text_content, card_body_style),
+                    Spacer(1, 4),
+                    Paragraph(f"⚠️ <i>Impossibile scaricare l'allegato (HTTP {resp.status_code})</i>", card_body_style)
+                ])
 
-        except Exception as e:
-            continue
+        except Exception as err:
+            # Segnala l'errore direttamente nella griglia del PDF senza perdere la spesa
+            cells.append([
+                Paragraph(text_content, card_body_style),
+                Spacer(1, 4),
+                Paragraph(f"⚠️ <i>Errore caricamento allegato: {err}</i>", card_body_style)
+            ])
 
     grid_data = []
     for i in range(0, len(cells), 2):
@@ -459,16 +474,21 @@ def genera_pdf_allegati(anno, mese):
 
     doc.build(story)
 
+    # Se ci sono PDF allegati, usiamo PdfWriter per unirli
     if pdf_files_to_merge:
         merger = PdfWriter()
         merger.append(pdf_filename)
 
         for pdf_item in pdf_files_to_merge:
-            pdf_bytes = io.BytesIO(pdf_item["bytes"])
-            merger.append(pdf_bytes)
+            try:
+                pdf_bytes = io.BytesIO(pdf_item["bytes"])
+                merger.append(pdf_bytes)
+            except Exception as pdf_err:
+                st.warning(f"Impossibile unire una pagina PDF ({pdf_item['info']}): {pdf_err}")
 
         merged_pdf_filename = f"Allegati_Spese_{MANDI_NOMI[mese-1]}_{anno}_Completo.pdf"
-        merger.write(merged_pdf_filename)
+        with open(merged_pdf_filename, "wb") as f_out:
+            merger.write(f_out)
         merger.close()
         
         if os.path.exists(pdf_filename):
@@ -476,7 +496,7 @@ def genera_pdf_allegati(anno, mese):
         return merged_pdf_filename
 
     return pdf_filename
-
+    
 # --- INTERFACCIA STREAMLIT ---
 st.title("🧾 Gestione Note Spese 2026")
 
