@@ -2,7 +2,7 @@ import os
 import io
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import pandas as pd
 import openpyxl
@@ -57,6 +57,25 @@ def init_supabase() -> Client:
     return create_client(url, key)
 
 supabase = init_supabase()
+
+# --- MANTENIMENTO ATTIVO SUPABASE (KEEP ALIVE) ---
+def check_and_keep_alive_supabase():
+    # Controlla se abbiamo già fatto un ping nelle ultime 24 ore
+    last_ping = st.session_state.get("last_supabase_ping")
+    now = datetime.now()
+    
+    if not last_ping or (now - last_ping) > timedelta(days=2):
+        try:
+            # Esegue una query ultra-leggera su Supabase per registrare attività SQL
+            supabase.table("spese").select("id").limit(1).execute()
+            st.session_state["last_supabase_ping"] = now
+            # Log discreto in console Streamlit
+            print(f"[{now.strftime('%Y-%m-%d %H:%M')}] Keep-alive Supabase eseguito con successo.")
+        except Exception as e:
+            print(f"Errore nel keep-alive Supabase: {e}")
+
+# Esegui ad ogni caricamento/interazione se sono trascorsi 2 giorni
+check_and_keep_alive_supabase()
 
 # --- COSTANTI ---
 BUCKET_NAME = "allegati-spese"
