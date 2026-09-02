@@ -79,7 +79,7 @@ check_and_keep_alive_supabase()
 
 # --- COSTANTI ---
 BUCKET_NAME = "allegati-spese"
-EXCEL_TEMPLATE = "Note spese 2026_Ferrari.xlsx"
+EXCEL_TEMPLATE = "Note spese 2026.xlsx"
 MAX_FILE_SIZE_MB = 5
 
 MANDI_NOMI = [
