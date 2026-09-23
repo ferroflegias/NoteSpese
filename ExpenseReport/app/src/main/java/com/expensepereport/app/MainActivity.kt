@@ -3,12 +3,11 @@ package com.expensepereport.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.*
@@ -29,27 +28,10 @@ import com.expensepereport.app.ui.screens.SettingsScreen
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
     object NewExpense : Screen("new_expense", "Nuova Spesa", Icons.Filled.Add)
-    object Records : Screen("records", "Registri", Icons.AutoMirrored.Filled.List)
+    object Records : Screen("records", "Registri", Icons.Filled.List)
     object Reports : Screen("reports", "Report", Icons.Filled.BarChart)
     object Export : Screen("export", "Export", Icons.Filled.Share)
     object Settings : Screen("settings", "Impostazioni", Icons.Filled.Settings)
-}
-
-@Composable
-fun AppTheme(
-    useDarkTheme: Boolean = isSystemInDarkTheme(),
-    content: @Composable () -> Unit
-) {
-    val colors = if (useDarkTheme) {
-        darkColorScheme()
-    } else {
-        lightColorScheme()
-    }
-
-    MaterialTheme(
-        colorScheme = colors,
-        content = content
-    )
 }
 
 class MainActivity : ComponentActivity() {
@@ -60,7 +42,7 @@ class MainActivity : ComponentActivity() {
         val settingsRepository = AppSettingsRepository(applicationContext)
 
         setContent {
-            AppTheme {
+            MaterialTheme {
                 val supabaseUrl by settingsRepository.supabaseUrlFlow.collectAsState(initial = AppSettingsRepository.DEFAULT_SUPABASE_URL)
                 val supabaseKey by settingsRepository.supabaseKeyFlow.collectAsState(initial = AppSettingsRepository.DEFAULT_SUPABASE_KEY)
 

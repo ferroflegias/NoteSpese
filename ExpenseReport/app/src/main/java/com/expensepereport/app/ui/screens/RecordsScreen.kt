@@ -1,32 +1,21 @@
 package com.expensepereport.app.ui.screens
 
-import android.content.Intent
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SupabaseService
 import kotlinx.coroutines.launch
-import java.io.InputStream
 import java.util.Locale
 
 @Composable
 fun RecordsScreen(supabaseService: SupabaseService) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     var speseList by remember { mutableStateOf<List<Spesa>>(emptyList()) }
@@ -102,9 +91,6 @@ fun RecordsScreen(supabaseService: SupabaseService) {
                         if (!spesa.note.isNullOrBlank()) {
                             Text("Note: ${spesa.note}", style = MaterialTheme.typography.bodySmall)
                         }
-                        if (!spesa.allegatoPath.isNullOrBlank()) {
-                            Text("📎 Allegato presente", color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
-                        }
                     }
                 }
             }
@@ -119,178 +105,56 @@ fun RecordsScreen(supabaseService: SupabaseService) {
         var editImporto by remember { mutableStateOf(spesa.importo.toString()) }
         var editNote by remember { mutableStateOf(spesa.note ?: "") }
 
-        var newImageUri by remember { mutableStateOf<Uri?>(null) }
-        var newPdfUri by remember { mutableStateOf<Uri?>(null) }
-        var isUpdating by remember { mutableStateOf(false) }
-
-        val imagePicker = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: Uri? ->
-            if (uri != null) {
-                newImageUri = uri
-                newPdfUri = null
-            }
-        }
-
-        val pdfPicker = rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.GetContent()
-        ) { uri: Uri? ->
-            if (uri != null) {
-                newPdfUri = uri
-                newImageUri = null
-            }
-        }
-
         AlertDialog(
             onDismissRequest = { selectedSpesa = null },
             title = { Text("Modifica Spesa #${spesa.id}") },
             text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = editDate,
                         onValueChange = { editDate = it },
-                        label = { Text("Data (YYYY-MM-DD)") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Data (YYYY-MM-DD)") }
                     )
                     OutlinedTextField(
                         value = editDest,
                         onValueChange = { editDest = it },
-                        label = { Text("Destinazione") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Destinazione") }
                     )
                     OutlinedTextField(
                         value = editScopo,
                         onValueChange = { editScopo = it },
-                        label = { Text("Scopo") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Scopo") }
                     )
                     OutlinedTextField(
                         value = editImporto,
                         onValueChange = { editImporto = it },
-                        label = { Text("Importo (€)") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Importo (€)") }
                     )
                     OutlinedTextField(
                         value = editNote,
                         onValueChange = { editNote = it },
-                        label = { Text("Note") },
-                        modifier = Modifier.fillMaxWidth()
+                        label = { Text("Note") }
                     )
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-
-                    Text("📎 Allegato Corrente:", style = MaterialTheme.typography.titleSmall)
-                    if (!spesa.allegatoPath.isNullOrBlank()) {
-                        val pathLower = spesa.allegatoPath.lowercase()
-                        if (pathLower.endsWith(".pdf") || pathLower.contains(".pdf?")) {
-                            TextButton(onClick = {
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spesa.allegatoPath))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    // Handle browser intent error
-                                }
-                            }) {
-                                Text("📄 Apri Documento PDF Allegato")
-                            }
-                        } else {
-                            Image(
-                                painter = rememberAsyncImagePainter(spesa.allegatoPath),
-                                contentDescription = "Foto allegato",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp)
-                            )
-                        }
-                    } else {
-                        Text("Nessun allegato salvato per questa spesa.", style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text("Sostituisci / Aggiungi Allegato:", style = MaterialTheme.typography.titleSmall)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { imagePicker.launch("image/*") },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("📷 Foto")
-                        }
-                        OutlinedButton(
-                            onClick = { pdfPicker.launch("application/pdf") },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("📄 PDF")
-                        }
-                    }
-
-                    newImageUri?.let { uri ->
-                        Text("Nuova foto selezionata", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
-                    }
-                    newPdfUri?.let { uri ->
-                        Text("Nuovo PDF selezionato", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
-                    }
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            isUpdating = true
-                            spesa.id?.let { id ->
-                                var finalAttachmentUrl = spesa.allegatoPath
-
-                                val newUri = newImageUri ?: newPdfUri
-                                if (newUri != null) {
-                                    try {
-                                        val inputStream: InputStream? = context.contentResolver.openInputStream(newUri)
-                                        val bytes = inputStream?.readBytes()
-                                        if (bytes != null) {
-                                            val ext = if (newPdfUri != null) "pdf" else "jpg"
-                                            val mime = if (newPdfUri != null) "application/pdf" else "image/jpeg"
-
-                                            // Delete old attachment if present
-                                            if (!spesa.allegatoPath.isNullOrBlank()) {
-                                                supabaseService.deleteAttachment(spesa.allegatoPath)
-                                            }
-
-                                            finalAttachmentUrl = supabaseService.uploadAttachment(
-                                                fileBytes = bytes,
-                                                dataSpesa = editDate,
-                                                extension = ext,
-                                                contentType = mime
-                                            )
-                                        }
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                    }
-                                }
-
-                                val updatedSpesa = spesa.copy(
-                                    data = editDate,
-                                    destinazione = editDest.ifBlank { null },
-                                    scopo = editScopo.ifBlank { null },
-                                    importo = editImporto.toDoubleOrNull() ?: spesa.importo,
-                                    note = editNote.ifBlank { null },
-                                    allegatoPath = finalAttachmentUrl
-                                )
-                                supabaseService.updateSpesa(id, updatedSpesa)
-                                selectedSpesa = null
-                                refreshList()
-                            }
-                            isUpdating = false
+                Button(onClick = {
+                    scope.launch {
+                        spesa.id?.let { id ->
+                            val updatedSpesa = spesa.copy(
+                                data = editDate,
+                                destinazione = editDest.ifBlank { null },
+                                scopo = editScopo.ifBlank { null },
+                                importo = editImporto.toDoubleOrNull() ?: spesa.importo,
+                                note = editNote.ifBlank { null }
+                            )
+                            supabaseService.updateSpesa(id, updatedSpesa)
+                            selectedSpesa = null
+                            refreshList()
                         }
-                    },
-                    enabled = !isUpdating
-                ) {
-                    Text(if (isUpdating) "Salvataggio..." else "Salva")
+                    }
+                }) {
+                    Text("Salva")
                 }
             },
             dismissButton = {
