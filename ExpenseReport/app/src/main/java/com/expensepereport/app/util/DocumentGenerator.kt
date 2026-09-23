@@ -10,17 +10,15 @@ import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SupabaseService
+import org.apache.poi.ss.usermodel.Cell
+import org.apache.poi.ss.usermodel.CellType
+import org.apache.poi.ss.usermodel.DataFormatter
 import org.apache.poi.ss.usermodel.FillPatternType
-import org.apache.poi.ss.usermodel.IndexedColors
 import org.apache.poi.xssf.usermodel.XSSFColor
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
-import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 object DocumentGenerator {
@@ -42,6 +40,13 @@ object DocumentGenerator {
         "ALTRO" to 13                 // Column N (0-indexed: 13)
     )
 
+    private val dataFormatter = DataFormatter()
+
+    private fun getCellText(cell: Cell?): String {
+        if (cell == null) return ""
+        return dataFormatter.formatCellValue(cell).trim()
+    }
+
     suspend fun generateExcel(
         context: Context,
         supabaseService: SupabaseService,
@@ -60,7 +65,6 @@ object DocumentGenerator {
 
             val rowOffset = 4 // 0-indexed row 4 is Row 5 in Excel
 
-            // Prepare fills
             val fillOrange = workbook.createCellStyle()
             val orangeColor = XSSFColor(byteArrayOf(0xFF.toByte(), 0xC0.toByte(), 0x00.toByte()), null)
             fillOrange.setFillForegroundColor(orangeColor)
@@ -91,7 +95,7 @@ object DocumentGenerator {
                     // Column C: Destinazione (0-indexed col 2)
                     spesa.destinazione?.let { dest ->
                         val cell = row.getCell(2) ?: row.createCell(2)
-                        val currVal = cell.stringCellValue.trim()
+                        val currVal = getCellText(cell)
                         if (currVal.isEmpty()) {
                             cell.setCellValue(dest)
                         } else if (!currVal.split("\\").map { it.trim() }.contains(dest)) {
@@ -102,7 +106,7 @@ object DocumentGenerator {
                     // Column D: Scopo (0-indexed col 3)
                     spesa.scopo?.let { scopo ->
                         val cell = row.getCell(3) ?: row.createCell(3)
-                        val currVal = cell.stringCellValue.trim()
+                        val currVal = getCellText(cell)
                         if (currVal.isEmpty()) {
                             cell.setCellValue(scopo)
                         } else if (!currVal.split("\\").map { it.trim() }.contains(scopo)) {
@@ -113,7 +117,7 @@ object DocumentGenerator {
                     // Column O: Note (0-indexed col 14)
                     spesa.note?.let { note ->
                         val cell = row.getCell(14) ?: row.createCell(14)
-                        val currVal = cell.stringCellValue.trim()
+                        val currVal = getCellText(cell)
                         if (currVal.isEmpty()) {
                             cell.setCellValue(note)
                         } else if (!currVal.split(";").map { it.trim() }.contains(note)) {
@@ -127,19 +131,24 @@ object DocumentGenerator {
                         val cell = row.getCell(colIdx) ?: row.createCell(colIdx)
                         val impVal = String.format(Locale.US, "%.2f", spesa.importo).toDouble()
 
-                        if (cell.cellType == org.apache.poi.ss.usermodel.CellType.BLANK || cell.stringCellValue.isBlank() && cell.numericCellValue == 0.0) {
+                        if (cell.cellType == CellType.BLANK || getCellText(cell).isEmpty()) {
                             cell.setCellValue(impVal)
                             if (spesa.valutaStraniera == 1) {
                                 cell.cellStyle = fillOrange
                             }
-                        } else if (cell.cellType == org.apache.poi.ss.usermodel.CellType.NUMERIC) {
+                        } else if (cell.cellType == CellType.NUMERIC) {
                             val currVal = cell.numericCellValue
                             cell.cellFormula = "$currVal+$impVal"
                             cell.cellStyle = fillYellow
-                        } else if (cell.cellType == org.apache.poi.ss.usermodel.CellType.FORMULA) {
+                        } else if (cell.cellType == CellType.FORMULA) {
                             val currFormula = cell.cellFormula
                             cell.cellFormula = "$currFormula+$impVal"
                             cell.cellStyle = fillYellow
+                        } else {
+                            cell.setCellValue(impVal)
+                            if (spesa.valutaStraniera == 1) {
+                                cell.cellStyle = fillOrange
+                            }
                         }
                     }
                 }
