@@ -1,0 +1,19 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment
+.venv/
+venv/
+ENV/
+
+# Android / Gradle build outputs
+.gradle/
+build/
+*/build/
+*.apk
+*.aar
+.idea/
+*.iml
+local.properties
