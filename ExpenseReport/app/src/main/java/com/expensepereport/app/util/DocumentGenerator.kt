@@ -23,6 +23,8 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.Locale
 
+var lastExcelError: String? = null
+
 object DocumentGenerator {
 
     val MONTH_NAMES = listOf(
@@ -58,7 +60,11 @@ object DocumentGenerator {
         startMonth: Int,
         endMonth: Int
     ): File? {
-        if (!templateFile.exists()) return null
+        lastExcelError = null
+        if (!templateFile.exists()) {
+            lastExcelError = "File modello non esistente in storage locale"
+            return null
+        }
 
         return try {
             val fis = FileInputStream(templateFile)
@@ -190,6 +196,7 @@ object DocumentGenerator {
             outFile
         } catch (t: Throwable) {
             t.printStackTrace()
+            lastExcelError = "${t.javaClass.simpleName}: ${t.message}"
             null
         }
     }

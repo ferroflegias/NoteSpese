@@ -14,6 +14,7 @@ import androidx.core.content.FileProvider
 import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.SupabaseService
 import com.expensepereport.app.util.DocumentGenerator
+import com.expensepereport.app.util.lastExcelError
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -151,7 +152,8 @@ fun ExportScreen(
                             statusMessage = "✅ Excel generato! Apertura Share Sheet..."
                             shareFile(excelFile, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
                         } else {
-                            statusMessage = "❌ Errore durante la generazione dell'Excel."
+                            val errDetail = lastExcelError ?: "Errore sconosciuto"
+                            statusMessage = "❌ Errore durante la generazione dell'Excel: $errDetail"
                         }
                     }
                 },
