@@ -1,13 +1,13 @@
 package com.expensepereport.app.data
 
 import io.ktor.client.*
-import io.ktor.client.call.*
 import io.ktor.client.engine.android.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -17,13 +17,15 @@ class SupabaseService(
     private val baseUrl: String,
     private val anonKey: String
 ) {
+    private val jsonInstance = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        isLenient = true
+    }
+
     private val client = HttpClient(Android) {
         install(ContentNegotiation) {
-            json(Json {
-                ignoreUnknownKeys = true
-                encodeDefaults = true
-                isLenient = true
-            })
+            json(jsonInstance)
         }
     }
 
@@ -38,11 +40,13 @@ class SupabaseService(
     suspend fun getSpese(): List<Spesa> {
         val cleanUrl = cleanBaseUrl()
         val url = "$cleanUrl/rest/v1/spese?select=*&order=data.desc,id.desc"
-        return client.get(url) {
+        val response = client.get(url) {
             header("apikey", anonKey)
             header("Authorization", "Bearer $anonKey")
             header("Accept", "application/json")
-        }.body()
+        }
+        val responseText = response.bodyAsText()
+        return jsonInstance.decodeFromString<List<Spesa>>(responseText)
     }
 
     suspend fun getSpeseForMonth(year: Int, month: Int): List<Spesa> {
@@ -55,22 +59,25 @@ class SupabaseService(
         }
 
         val url = "$cleanUrl/rest/v1/spese?data=gte.$startDate&data=lt.$endDate&order=data.asc,id.asc"
-        return client.get(url) {
+        val response = client.get(url) {
             header("apikey", anonKey)
             header("Authorization", "Bearer $anonKey")
             header("Accept", "application/json")
-        }.body()
+        }
+        val responseText = response.bodyAsText()
+        return jsonInstance.decodeFromString<List<Spesa>>(responseText)
     }
 
     suspend fun insertSpesa(spesa: Spesa): Boolean {
         val cleanUrl = cleanBaseUrl()
         val url = "$cleanUrl/rest/v1/spese"
+        val jsonBody = jsonInstance.encodeToString(spesa)
         val response = client.post(url) {
             header("apikey", anonKey)
             header("Authorization", "Bearer $anonKey")
             contentType(ContentType.Application.Json)
             header("Prefer", "return=minimal")
-            setBody(spesa)
+            setBody(jsonBody)
         }
         return response.status.isSuccess()
     }
@@ -78,11 +85,12 @@ class SupabaseService(
     suspend fun updateSpesa(id: Long, spesa: Spesa): Boolean {
         val cleanUrl = cleanBaseUrl()
         val url = "$cleanUrl/rest/v1/spese?id=eq.$id"
+        val jsonBody = jsonInstance.encodeToString(spesa)
         val response = client.patch(url) {
             header("apikey", anonKey)
             header("Authorization", "Bearer $anonKey")
             contentType(ContentType.Application.Json)
-            setBody(spesa)
+            setBody(jsonBody)
         }
         return response.status.isSuccess()
     }
@@ -146,10 +154,11 @@ class SupabaseService(
 
     suspend fun downloadBytes(url: String): ByteArray? {
         return try {
-            client.get(url) {
+            val response = client.get(url) {
                 header("apikey", anonKey)
                 header("Authorization", "Bearer $anonKey")
-            }.body()
+            }
+            response.readBytes()
         } catch (e: Exception) {
             e.printStackTrace()
             null
