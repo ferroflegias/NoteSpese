@@ -7,7 +7,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -15,7 +14,9 @@ import androidx.core.content.FileProvider
 import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.SupabaseService
 import com.expensepereport.app.util.DocumentGenerator
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
 
@@ -133,15 +134,17 @@ fun ExportScreen(
                         val mStart = if (modeCode == "anno") 1 else excelMonthStart
                         val mEnd = if (modeCode == "anno") 12 else if (modeCode == "range") excelMonthEnd else excelMonthStart
 
-                        val excelFile = DocumentGenerator.generateExcel(
-                            context = context,
-                            supabaseService = supabaseService,
-                            templateFile = template,
-                            year = yearInput,
-                            mode = modeCode,
-                            startMonth = mStart,
-                            endMonth = mEnd
-                        )
+                        val excelFile = withContext(Dispatchers.IO) {
+                            DocumentGenerator.generateExcel(
+                                context = context,
+                                supabaseService = supabaseService,
+                                templateFile = template,
+                                year = yearInput,
+                                mode = modeCode,
+                                startMonth = mStart,
+                                endMonth = mEnd
+                            )
+                        }
                         isGeneratingExcel = false
 
                         if (excelFile != null && excelFile.exists()) {
@@ -178,12 +181,14 @@ fun ExportScreen(
             onClick = {
                 scope.launch {
                     isGeneratingPdf = true
-                    val pdfFile = DocumentGenerator.generatePdfAttachments(
-                        context = context,
-                        supabaseService = supabaseService,
-                        year = yearInput,
-                        month = pdfMonth
-                    )
+                    val pdfFile = withContext(Dispatchers.IO) {
+                        DocumentGenerator.generatePdfAttachments(
+                            context = context,
+                            supabaseService = supabaseService,
+                            year = yearInput,
+                            month = pdfMonth
+                        )
+                    }
                     isGeneratingPdf = false
 
                     if (pdfFile != null && pdfFile.exists()) {

@@ -8,6 +8,8 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SupabaseService
 import org.apache.poi.ss.usermodel.Cell
@@ -63,7 +65,8 @@ object DocumentGenerator {
             val workbook = XSSFWorkbook(fis)
             fis.close()
 
-            val rowOffset = 4 // 0-indexed row 4 is Row 5 in Excel
+            // Day 1 corresponds to Row 5 in Excel (0-indexed row 4)
+            val rowOffset = 3
 
             val fillOrange = workbook.createCellStyle()
             val orangeColor = XSSFColor(byteArrayOf(0xFF.toByte(), 0xC0.toByte(), 0x00.toByte()), null)
@@ -131,23 +134,41 @@ object DocumentGenerator {
                         val cell = row.getCell(colIdx) ?: row.createCell(colIdx)
                         val impVal = String.format(Locale.US, "%.2f", spesa.importo).toDouble()
 
+                        val existingStyle = cell.cellStyle
+
                         if (cell.cellType == CellType.BLANK || getCellText(cell).isEmpty()) {
                             cell.setCellValue(impVal)
                             if (spesa.valutaStraniera == 1) {
-                                cell.cellStyle = fillOrange
+                                val newStyle = workbook.createCellStyle()
+                                if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                                newStyle.setFillForegroundColor(orangeColor)
+                                newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                                cell.cellStyle = newStyle
                             }
                         } else if (cell.cellType == CellType.NUMERIC) {
                             val currVal = cell.numericCellValue
                             cell.cellFormula = "$currVal+$impVal"
-                            cell.cellStyle = fillYellow
+                            val newStyle = workbook.createCellStyle()
+                            if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                            newStyle.setFillForegroundColor(yellowColor)
+                            newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                            cell.cellStyle = newStyle
                         } else if (cell.cellType == CellType.FORMULA) {
                             val currFormula = cell.cellFormula
                             cell.cellFormula = "$currFormula+$impVal"
-                            cell.cellStyle = fillYellow
+                            val newStyle = workbook.createCellStyle()
+                            if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                            newStyle.setFillForegroundColor(yellowColor)
+                            newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                            cell.cellStyle = newStyle
                         } else {
                             cell.setCellValue(impVal)
                             if (spesa.valutaStraniera == 1) {
-                                cell.cellStyle = fillOrange
+                                val newStyle = workbook.createCellStyle()
+                                if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                                newStyle.setFillForegroundColor(orangeColor)
+                                newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                                cell.cellStyle = newStyle
                             }
                         }
                     }
@@ -167,8 +188,8 @@ object DocumentGenerator {
             workbook.close()
 
             outFile
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (t: Throwable) {
+            t.printStackTrace()
             null
         }
     }
@@ -204,7 +225,7 @@ object DocumentGenerator {
 
             val bodyPaint = Paint().apply {
                 color = android.graphics.Color.BLACK
-                textSize = 10f
+                textSize = 9f
             }
 
             val boldPaint = Paint().apply {
@@ -216,59 +237,112 @@ object DocumentGenerator {
             // Draw Header Title
             canvas.drawText("Allegati Spese (${speseWithAttachment.size} Voci) - ${MONTH_NAMES[month - 1]} $year", 30f, 40f, titlePaint)
 
-            var currentY = 70f
-            val itemWidth = 260f
-            val maxImageHeight = 280f
+            val pendingPdfsToMerge = mutableListOf<Pair<Spesa, ByteArray>>()
+
+            // Grid Layout: 2 columns x 2 rows = 4 items per page
+            val colPositions = floatArrayOf(30f, 305f)
+            val rowPositions = floatArrayOf(70f, 440f)
 
             for ((index, spesa) in speseWithAttachment.withIndex()) {
-                val isRightColumn = index % 2 == 1
-                val startX = if (isRightColumn) 300f else 30f
+                val pageItemIndex = index % 4
 
-                if (!isRightColumn && currentY + 320f > pageHeight - 30f) {
+                if (index > 0 && pageItemIndex == 0) {
                     pdfDocument.finishPage(page)
                     pageNumber++
                     pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
                     page = pdfDocument.startPage(pageInfo)
                     canvas = page.canvas
-                    currentY = 40f
                 }
 
-                val itemY = currentY
+                val colIdx = pageItemIndex % 2
+                val rowIdx = pageItemIndex / 2
 
-                // Draw Text Info
-                canvas.drawText("ID #${spesa.id ?: "-"} | Data: ${spesa.data}", startX, itemY + 12f, boldPaint)
-                canvas.drawText("Importo: € ${String.format(Locale.US, "%.2f", spesa.importo)}", startX, itemY + 26f, boldPaint)
-                canvas.drawText("Destinazione: ${spesa.destinazione ?: "-"}", startX, itemY + 40f, bodyPaint)
-                canvas.drawText("Cat: ${spesa.categoria} | Pag: ${spesa.metodoPagamento ?: "Standard"}", startX, itemY + 54f, bodyPaint)
+                val startX = colPositions[colIdx]
+                val startY = rowPositions[rowIdx]
 
-                // Download & Process Image Attachment
+                // Item Header Info
+                canvas.drawText("ID #${spesa.id ?: "-"} | Data: ${spesa.data}", startX, startY + 12f, boldPaint)
+                canvas.drawText("Importo: € ${String.format(Locale.US, "%.2f", spesa.importo)}", startX, startY + 26f, boldPaint)
+                canvas.drawText("Destinazione: ${spesa.destinazione ?: "-"}", startX, startY + 40f, bodyPaint)
+                canvas.drawText("Cat: ${spesa.categoria} | Pag: ${spesa.metodoPagamento ?: "Standard"}", startX, startY + 54f, bodyPaint)
+
                 val url = spesa.allegatoPath!!
-                val imageBytes = supabaseService.downloadBytes(url)
+                val isPdf = url.lowercase().contains(".pdf")
 
-                if (imageBytes != null) {
-                    try {
-                        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-                        if (bitmap != null) {
-                            val grayBitmap = convertToGrayscale(bitmap)
-                            val scaledBitmap = scaleBitmapToFit(grayBitmap, itemWidth.toInt(), maxImageHeight.toInt())
+                val attachmentBytes = supabaseService.downloadBytes(url)
 
-                            canvas.drawBitmap(scaledBitmap, startX, itemY + 65f, null)
-                        } else {
-                            canvas.drawText("[Allegato non visualizzabile]", startX, itemY + 75f, bodyPaint)
+                if (attachmentBytes != null) {
+                    if (isPdf) {
+                        pendingPdfsToMerge.add(Pair(spesa, attachmentBytes))
+                        canvas.drawText("📄 [Documento PDF allegato e unito in coda]", startX, startY + 80f, boldPaint)
+                    } else {
+                        try {
+                            val bitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size)
+                            if (bitmap != null) {
+                                val grayBitmap = convertToGrayscale(bitmap)
+                                val maxW = 250
+                                val maxH = 280
+                                val scaledBitmap = scaleBitmapToFit(grayBitmap, maxW, maxH)
+
+                                canvas.drawBitmap(scaledBitmap, startX, startY + 65f, null)
+                                grayBitmap.recycle()
+                                bitmap.recycle()
+                            } else {
+                                canvas.drawText("[Immagine non visualizzabile]", startX, startY + 80f, bodyPaint)
+                            }
+                        } catch (e: Exception) {
+                            canvas.drawText("[Errore caricamento immagine]", startX, startY + 80f, bodyPaint)
                         }
-                    } catch (e: Exception) {
-                        canvas.drawText("[Errore allegato]", startX, itemY + 75f, bodyPaint)
                     }
                 } else {
-                    canvas.drawText("[Impossibile scaricare allegato]", startX, itemY + 75f, bodyPaint)
-                }
-
-                if (isRightColumn) {
-                    currentY += 340f
+                    canvas.drawText("[Impossibile scaricare allegato]", startX, startY + 80f, bodyPaint)
                 }
             }
 
             pdfDocument.finishPage(page)
+
+            // Render and append PDF attachment pages to the end of pdfDocument using PdfRenderer
+            for ((spesa, pdfBytes) in pendingPdfsToMerge) {
+                try {
+                    val tempPdfFile = File(context.cacheDir, "temp_attachment_${spesa.id}.pdf")
+                    tempPdfFile.writeBytes(pdfBytes)
+
+                    val fileDescriptor = ParcelFileDescriptor.open(tempPdfFile, ParcelFileDescriptor.MODE_READ_ONLY)
+                    val pdfRenderer = PdfRenderer(fileDescriptor)
+
+                    for (i in 0 until pdfRenderer.pageCount) {
+                        val pdfPage = pdfRenderer.openPage(i)
+
+                        pageNumber++
+                        pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, pageNumber).create()
+                        page = pdfDocument.startPage(pageInfo)
+                        canvas = page.canvas
+
+                        canvas.drawText("Allegato PDF in Coda - ID #${spesa.id ?: "-"} (Pagina ${i + 1}/${pdfRenderer.pageCount})", 30f, 30f, boldPaint)
+
+                        // Render PDF page to a Bitmap
+                        val bitmap = Bitmap.createBitmap(pdfPage.width, pdfPage.height, Bitmap.Config.ARGB_8888)
+                        pdfPage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                        val grayBitmap = convertToGrayscale(bitmap)
+                        val scaledBitmap = scaleBitmapToFit(grayBitmap, pageWidth - 60, pageHeight - 80)
+
+                        canvas.drawBitmap(scaledBitmap, 30f, 50f, null)
+
+                        grayBitmap.recycle()
+                        bitmap.recycle()
+
+                        pdfDocument.finishPage(page)
+                        pdfPage.close()
+                    }
+
+                    pdfRenderer.close()
+                    fileDescriptor.close()
+                    tempPdfFile.delete()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
 
             val pdfFile = File(context.cacheDir, "Allegati_Spese_${MONTH_NAMES[month - 1]}_${year}.pdf")
             val fos = FileOutputStream(pdfFile)

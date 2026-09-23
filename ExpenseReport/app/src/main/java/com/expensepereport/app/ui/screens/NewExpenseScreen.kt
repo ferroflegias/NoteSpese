@@ -14,11 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
-import com.expensepereport.app.data.Spesa
+import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SupabaseService
 import com.expensepereport.app.util.OcrAnalyzer
-import com.expensepereport.app.util.OcrResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
@@ -110,7 +111,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                 onClick = {
                     scope.launch {
                         isAnalyzing = true
-                        val ocrRes = OcrAnalyzer.analyzeReceipt(context, uri)
+                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri) }
                         isAnalyzing = false
                         if (ocrRes != null) {
                             dateInput = ocrRes.dataStr
@@ -228,7 +229,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         OutlinedTextField(
             value = noteInput,
             onValueChange = { noteInput = it },
-            label = { Text("Note") },
+            label = { Text("Notes") },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -260,42 +261,44 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                         else -> "Carta Carburante"
                     }
 
-                    var attachmentUrl: String? = null
+                    val success = withContext(Dispatchers.IO) {
+                        var attachmentUrl: String? = null
+                        val currentUri = imageUri ?: pdfUri
+                        if (currentUri != null) {
+                            try {
+                                val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
+                                val fileBytes = inputStream?.readBytes()
+                                if (fileBytes != null) {
+                                    val ext = if (pdfUri != null) "pdf" else "jpg"
+                                    val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
 
-                    val currentUri = imageUri ?: pdfUri
-                    if (currentUri != null) {
-                        try {
-                            val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
-                            val fileBytes = inputStream?.readBytes()
-                            if (fileBytes != null) {
-                                val ext = if (pdfUri != null) "pdf" else "jpg"
-                                val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
-
-                                attachmentUrl = supabaseService.uploadAttachment(
-                                    fileBytes = fileBytes,
-                                    dataSpesa = dateInput,
-                                    extension = ext,
-                                    contentType = mime
-                                )
+                                    attachmentUrl = supabaseService.uploadAttachment(
+                                        fileBytes = fileBytes,
+                                        dataSpesa = dateInput,
+                                        extension = ext,
+                                        contentType = mime
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                e.printStackTrace()
                             }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
                         }
+
+                        val spesaInsert = SpesaInsert(
+                            data = dateInput,
+                            destinazione = destInput.ifBlank { null },
+                            scopo = scopoInput.ifBlank { null },
+                            categoria = catKey,
+                            metodoPagamento = metodoStr,
+                            importo = doubleAmount,
+                            note = noteInput.ifBlank { null },
+                            allegatoPath = attachmentUrl,
+                            valutaStraniera = if (isForeignCurrency) 1 else 0
+                        )
+
+                        supabaseService.insertSpesa(spesaInsert)
                     }
 
-                    val spesa = Spesa(
-                        data = dateInput,
-                        destinazione = destInput.ifBlank { null },
-                        scopo = scopoInput.ifBlank { null },
-                        categoria = catKey,
-                        metodoPagamento = metodoStr,
-                        importo = doubleAmount,
-                        note = noteInput.ifBlank { null },
-                        allegatoPath = attachmentUrl,
-                        valutaStraniera = if (isForeignCurrency) 1 else 0
-                    )
-
-                    val success = supabaseService.insertSpesa(spesa)
                     isSaving = false
 
                     if (success) {

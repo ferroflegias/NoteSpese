@@ -68,7 +68,7 @@ class SupabaseService(
         return jsonInstance.decodeFromString<List<Spesa>>(responseText)
     }
 
-    suspend fun insertSpesa(spesa: Spesa): Boolean {
+    suspend fun insertSpesa(spesa: SpesaInsert): Boolean {
         val cleanUrl = cleanBaseUrl()
         val url = "$cleanUrl/rest/v1/spese"
         val jsonBody = jsonInstance.encodeToString(spesa)
@@ -82,7 +82,7 @@ class SupabaseService(
         return response.status.isSuccess()
     }
 
-    suspend fun updateSpesa(id: Long, spesa: Spesa): Boolean {
+    suspend fun updateSpesa(id: Long, spesa: SpesaInsert): Boolean {
         val cleanUrl = cleanBaseUrl()
         val url = "$cleanUrl/rest/v1/spese?id=eq.$id"
         val jsonBody = jsonInstance.encodeToString(spesa)
