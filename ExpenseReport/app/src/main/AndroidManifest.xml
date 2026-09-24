@@ -9,7 +9,7 @@
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher_round"
-        android:label="ExpensePereport"
+        android:label="PerExpenseReport"
         android:supportsRtl="true"
         android:theme="@style/Theme.ExpenseReport">
 

@@ -87,7 +87,7 @@ object DocumentGenerator {
             val workbook = XSSFWorkbook(fis)
             fis.close()
 
-            // Day 1 corresponds to Row 6 in Excel (0-indexed row index 5)
+            // Day 1 corresponds to Row 6 in Excel (0-indexed row 5)
             val rowOffset = 4
 
             val orangeColorIndex = IndexedColors.GOLD.index
@@ -245,17 +245,26 @@ object DocumentGenerator {
                 color = android.graphics.Color.BLACK
                 textSize = 16f
                 isFakeBoldText = true
+                isAntiAlias = true
             }
 
             val bodyPaint = Paint().apply {
                 color = android.graphics.Color.BLACK
                 textSize = 9f
+                isAntiAlias = true
             }
 
             val boldPaint = Paint().apply {
                 color = android.graphics.Color.BLACK
                 textSize = 10f
                 isFakeBoldText = true
+                isAntiAlias = true
+            }
+
+            val highQualityBitmapPaint = Paint().apply {
+                isAntiAlias = true
+                isFilterBitmap = true
+                isDither = true
             }
 
             // Draw Header Title
@@ -301,14 +310,19 @@ object DocumentGenerator {
                         canvas.drawText("📄 [Documento PDF allegato e unito in coda]", startX, startY + 80f, boldPaint)
                     } else {
                         try {
-                            val bitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size)
+                            val options = BitmapFactory.Options().apply {
+                                inScaled = false
+                                inPreferredConfig = Bitmap.Config.ARGB_8888
+                            }
+                            val bitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size, options)
                             if (bitmap != null) {
                                 val grayBitmap = convertToGrayscale(bitmap)
                                 val maxW = 250
                                 val maxH = 280
-                                val scaledBitmap = scaleBitmapToFit(grayBitmap, maxW, maxH)
+                                val scaledBitmap = scaleBitmapToFitHighQuality(grayBitmap, maxW, maxH)
 
-                                canvas.drawBitmap(scaledBitmap, startX, startY + 65f, null)
+                                canvas.drawBitmap(scaledBitmap, startX, startY + 65f, highQualityBitmapPaint)
+                                if (scaledBitmap != grayBitmap) scaledBitmap.recycle()
                                 grayBitmap.recycle()
                                 bitmap.recycle()
                             } else {
@@ -325,7 +339,7 @@ object DocumentGenerator {
 
             pdfDocument.finishPage(page)
 
-            // Render and append PDF attachment pages to the end of pdfDocument using PdfRenderer
+            // Render and append PDF attachment pages at high resolution (300 DPI scale)
             for ((spesa, pdfBytes) in pendingPdfsToMerge) {
                 try {
                     val tempPdfFile = File(context.cacheDir, "temp_attachment_${spesa.id}.pdf")
@@ -344,15 +358,20 @@ object DocumentGenerator {
 
                         canvas.drawText("Allegato PDF in Coda - ID #${spesa.id ?: "-"} (Pagina ${i + 1}/${pdfRenderer.pageCount})", 30f, 30f, boldPaint)
 
-                        // Render PDF page to a Bitmap
-                        val bitmap = Bitmap.createBitmap(pdfPage.width, pdfPage.height, Bitmap.Config.ARGB_8888)
+                        // Render PDF page at 3x scale (~216 DPI) for ultra-sharp high resolution
+                        val scaleFactor = 3f
+                        val highResWidth = (pdfPage.width * scaleFactor).toInt()
+                        val highResHeight = (pdfPage.height * scaleFactor).toInt()
+
+                        val bitmap = Bitmap.createBitmap(highResWidth, highResHeight, Bitmap.Config.ARGB_8888)
                         pdfPage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
                         val grayBitmap = convertToGrayscale(bitmap)
-                        val scaledBitmap = scaleBitmapToFit(grayBitmap, pageWidth - 60, pageHeight - 80)
+                        val scaledBitmap = scaleBitmapToFitHighQuality(grayBitmap, pageWidth - 60, pageHeight - 80)
 
-                        canvas.drawBitmap(scaledBitmap, 30f, 50f, null)
+                        canvas.drawBitmap(scaledBitmap, 30f, 50f, highQualityBitmapPaint)
 
+                        if (scaledBitmap != grayBitmap) scaledBitmap.recycle()
                         grayBitmap.recycle()
                         bitmap.recycle()
 
@@ -386,16 +405,18 @@ object DocumentGenerator {
         val height = bmpOriginal.height
         val bmpGrayscale = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmpGrayscale)
-        val paint = Paint()
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+        }
         val cm = ColorMatrix()
         cm.setSaturation(0f)
-        val f = ColorMatrixColorFilter(cm)
-        paint.colorFilter = f
+        paint.colorFilter = ColorMatrixColorFilter(cm)
         canvas.drawBitmap(bmpOriginal, 0f, 0f, paint)
         return bmpGrayscale
     }
 
-    private fun scaleBitmapToFit(bitmap: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
+    private fun scaleBitmapToFitHighQuality(bitmap: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
         val width = bitmap.width
         val height = bitmap.height
         val ratio = Math.min(maxWidth.toFloat() / width, maxHeight.toFloat() / height)
