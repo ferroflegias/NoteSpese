@@ -16,7 +16,7 @@ import org.apache.poi.ss.usermodel.Cell
 import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.DataFormatter
 import org.apache.poi.ss.usermodel.FillPatternType
-import org.apache.poi.xssf.usermodel.XSSFColor
+import org.apache.poi.ss.usermodel.IndexedColors
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileInputStream
@@ -75,13 +75,11 @@ object DocumentGenerator {
             val rowOffset = 3
 
             val fillOrange = workbook.createCellStyle()
-            val orangeColor = XSSFColor(byteArrayOf(0xFF.toByte(), 0xC0.toByte(), 0x00.toByte()), null)
-            fillOrange.setFillForegroundColor(orangeColor)
+            fillOrange.fillForegroundColor = IndexedColors.GOLD.index
             fillOrange.fillPattern = FillPatternType.SOLID_FOREGROUND
 
             val fillYellow = workbook.createCellStyle()
-            val yellowColor = XSSFColor(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0x00.toByte()), null)
-            fillYellow.setFillForegroundColor(yellowColor)
+            fillYellow.fillForegroundColor = IndexedColors.YELLOW.index
             fillYellow.fillPattern = FillPatternType.SOLID_FOREGROUND
 
             for (m in startMonth..endMonth) {
@@ -147,7 +145,7 @@ object DocumentGenerator {
                             if (spesa.valutaStraniera == 1) {
                                 val newStyle = workbook.createCellStyle()
                                 if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                                newStyle.setFillForegroundColor(orangeColor)
+                                newStyle.fillForegroundColor = IndexedColors.GOLD.index
                                 newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                                 cell.cellStyle = newStyle
                             }
@@ -156,7 +154,7 @@ object DocumentGenerator {
                             cell.cellFormula = "$currVal+$impVal"
                             val newStyle = workbook.createCellStyle()
                             if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                            newStyle.setFillForegroundColor(yellowColor)
+                            newStyle.fillForegroundColor = IndexedColors.YELLOW.index
                             newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                             cell.cellStyle = newStyle
                         } else if (cell.cellType == CellType.FORMULA) {
@@ -164,7 +162,7 @@ object DocumentGenerator {
                             cell.cellFormula = "$currFormula+$impVal"
                             val newStyle = workbook.createCellStyle()
                             if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                            newStyle.setFillForegroundColor(yellowColor)
+                            newStyle.fillForegroundColor = IndexedColors.YELLOW.index
                             newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                             cell.cellStyle = newStyle
                         } else {
@@ -172,7 +170,7 @@ object DocumentGenerator {
                             if (spesa.valutaStraniera == 1) {
                                 val newStyle = workbook.createCellStyle()
                                 if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                                newStyle.setFillForegroundColor(orangeColor)
+                                newStyle.fillForegroundColor = IndexedColors.GOLD.index
                                 newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                                 cell.cellStyle = newStyle
                             }
