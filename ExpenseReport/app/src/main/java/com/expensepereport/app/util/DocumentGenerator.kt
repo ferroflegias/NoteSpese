@@ -7,6 +7,8 @@ import android.graphics.Canvas
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
@@ -276,6 +278,9 @@ object DocumentGenerator {
             val colPositions = floatArrayOf(30f, 305f)
             val rowPositions = floatArrayOf(70f, 440f)
 
+            val maxCellWidth = 260f
+            val maxCellHeight = 290f
+
             for ((index, spesa) in speseWithAttachment.withIndex()) {
                 val pageItemIndex = index % 4
 
@@ -314,17 +319,28 @@ object DocumentGenerator {
                                 inScaled = false
                                 inPreferredConfig = Bitmap.Config.ARGB_8888
                             }
-                            val bitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size, options)
-                            if (bitmap != null) {
-                                val grayBitmap = convertToGrayscale(bitmap)
-                                val maxW = 250
-                                val maxH = 280
-                                val scaledBitmap = scaleBitmapToFitHighQuality(grayBitmap, maxW, maxH)
+                            // Decode original image without downsampling to retain 100% pixel detail
+                            val originalBitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size, options)
+                            if (originalBitmap != null) {
+                                val grayBitmap = convertToGrayscale(originalBitmap)
 
-                                canvas.drawBitmap(scaledBitmap, startX, startY + 65f, highQualityBitmapPaint)
-                                if (scaledBitmap != grayBitmap) scaledBitmap.recycle()
+                                // Calculate destination bounds in points preserving aspect ratio
+                                val srcWidth = grayBitmap.width.toFloat()
+                                val srcHeight = grayBitmap.height.toFloat()
+                                val ratio = Math.min(maxCellWidth / srcWidth, maxCellHeight / srcHeight)
+
+                                val destWidth = srcWidth * ratio
+                                val destHeight = srcHeight * ratio
+
+                                val imageTop = startY + 65f
+                                val srcRect = Rect(0, 0, grayBitmap.width, grayBitmap.height)
+                                val dstRect = RectF(startX, imageTop, startX + destWidth, imageTop + destHeight)
+
+                                // Draw full resolution bitmap directly using destination bounds
+                                canvas.drawBitmap(grayBitmap, srcRect, dstRect, highQualityBitmapPaint)
+
                                 grayBitmap.recycle()
-                                bitmap.recycle()
+                                originalBitmap.recycle()
                             } else {
                                 canvas.drawText("[Immagine non visualizzabile]", startX, startY + 80f, bodyPaint)
                             }
@@ -339,7 +355,7 @@ object DocumentGenerator {
 
             pdfDocument.finishPage(page)
 
-            // Render and append PDF attachment pages at high resolution (300 DPI scale)
+            // Render and append PDF attachment pages at 4x high resolution (~300 DPI)
             for ((spesa, pdfBytes) in pendingPdfsToMerge) {
                 try {
                     val tempPdfFile = File(context.cacheDir, "temp_attachment_${spesa.id}.pdf")
@@ -358,22 +374,33 @@ object DocumentGenerator {
 
                         canvas.drawText("Allegato PDF in Coda - ID #${spesa.id ?: "-"} (Pagina ${i + 1}/${pdfRenderer.pageCount})", 30f, 30f, boldPaint)
 
-                        // Render PDF page at 3x scale (~216 DPI) for ultra-sharp high resolution
-                        val scaleFactor = 3f
+                        // Render PDF page at 4x scale (~300 DPI) for original print quality
+                        val scaleFactor = 4f
                         val highResWidth = (pdfPage.width * scaleFactor).toInt()
                         val highResHeight = (pdfPage.height * scaleFactor).toInt()
 
-                        val bitmap = Bitmap.createBitmap(highResWidth, highResHeight, Bitmap.Config.ARGB_8888)
-                        pdfPage.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val highResBitmap = Bitmap.createBitmap(highResWidth, highResHeight, Bitmap.Config.ARGB_8888)
+                        pdfPage.render(highResBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
 
-                        val grayBitmap = convertToGrayscale(bitmap)
-                        val scaledBitmap = scaleBitmapToFitHighQuality(grayBitmap, pageWidth - 60, pageHeight - 80)
+                        val grayBitmap = convertToGrayscale(highResBitmap)
 
-                        canvas.drawBitmap(scaledBitmap, 30f, 50f, highQualityBitmapPaint)
+                        val availableWidth = pageWidth - 60f
+                        val availableHeight = pageHeight - 80f
 
-                        if (scaledBitmap != grayBitmap) scaledBitmap.recycle()
+                        val srcWidth = grayBitmap.width.toFloat()
+                        val srcHeight = grayBitmap.height.toFloat()
+                        val ratio = Math.min(availableWidth / srcWidth, availableHeight / srcHeight)
+
+                        val destWidth = srcWidth * ratio
+                        val destHeight = srcHeight * ratio
+
+                        val srcRect = Rect(0, 0, grayBitmap.width, grayBitmap.height)
+                        val dstRect = RectF(30f, 50f, 30f + destWidth, 50f + destHeight)
+
+                        canvas.drawBitmap(grayBitmap, srcRect, dstRect, highQualityBitmapPaint)
+
                         grayBitmap.recycle()
-                        bitmap.recycle()
+                        highResBitmap.recycle()
 
                         pdfDocument.finishPage(page)
                         pdfPage.close()
@@ -414,14 +441,5 @@ object DocumentGenerator {
         paint.colorFilter = ColorMatrixColorFilter(cm)
         canvas.drawBitmap(bmpOriginal, 0f, 0f, paint)
         return bmpGrayscale
-    }
-
-    private fun scaleBitmapToFitHighQuality(bitmap: Bitmap, maxWidth: Int, maxHeight: Int): Bitmap {
-        val width = bitmap.width
-        val height = bitmap.height
-        val ratio = Math.min(maxWidth.toFloat() / width, maxHeight.toFloat() / height)
-        val newWidth = Math.max(1, (width * ratio).toInt())
-        val newHeight = Math.max(1, (height * ratio).toInt())
-        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
     }
 }
