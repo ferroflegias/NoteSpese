@@ -14,7 +14,6 @@ import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SupabaseService
 import org.apache.poi.ss.usermodel.Cell
 import org.apache.poi.ss.usermodel.CellType
-import org.apache.poi.ss.usermodel.DataFormatter
 import org.apache.poi.ss.usermodel.FillPatternType
 import org.apache.poi.ss.usermodel.IndexedColors
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
@@ -44,11 +43,28 @@ object DocumentGenerator {
         "ALTRO" to 13                 // Column N (0-indexed: 13)
     )
 
-    private val dataFormatter = DataFormatter()
-
     private fun getCellText(cell: Cell?): String {
         if (cell == null) return ""
-        return dataFormatter.formatCellValue(cell).trim()
+        return when (cell.cellType) {
+            CellType.STRING -> cell.stringCellValue.trim()
+            CellType.NUMERIC -> {
+                val num = cell.numericCellValue
+                if (num == num.toLong().toDouble()) {
+                    num.toLong().toString()
+                } else {
+                    String.format(Locale.US, "%.2f", num)
+                }
+            }
+            CellType.BOOLEAN -> cell.booleanCellValue.toString()
+            CellType.FORMULA -> {
+                try {
+                    cell.cellFormula.trim()
+                } catch (e: Exception) {
+                    ""
+                }
+            }
+            else -> ""
+        }
     }
 
     suspend fun generateExcel(
