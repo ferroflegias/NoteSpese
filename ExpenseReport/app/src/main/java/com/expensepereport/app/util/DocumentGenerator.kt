@@ -87,16 +87,11 @@ object DocumentGenerator {
             val workbook = XSSFWorkbook(fis)
             fis.close()
 
-            // Day 1 corresponds to Row 5 in Excel (0-indexed row 4)
-            val rowOffset = 3
+            // Day 1 corresponds to Row 6 in Excel (0-indexed row index 5)
+            val rowOffset = 4
 
-            val fillOrange = workbook.createCellStyle()
-            fillOrange.fillForegroundColor = IndexedColors.GOLD.index
-            fillOrange.fillPattern = FillPatternType.SOLID_FOREGROUND
-
-            val fillYellow = workbook.createCellStyle()
-            fillYellow.fillForegroundColor = IndexedColors.YELLOW.index
-            fillYellow.fillPattern = FillPatternType.SOLID_FOREGROUND
+            val orangeColorIndex = IndexedColors.GOLD.index
+            val yellowColorIndex = IndexedColors.YELLOW.index
 
             for (m in startMonth..endMonth) {
                 val sheetName = MONTH_NAMES[m - 1]
@@ -155,38 +150,46 @@ object DocumentGenerator {
                         val impVal = String.format(Locale.US, "%.2f", spesa.importo).toDouble()
 
                         val existingStyle = cell.cellStyle
+                        val currFillColor = existingStyle?.fillForegroundColor ?: 0
+
+                        val isAlreadyHighlighted = currFillColor == orangeColorIndex || currFillColor == yellowColorIndex
+                        val isForeign = spesa.valutaStraniera == 1
 
                         if (cell.cellType == CellType.BLANK || getCellText(cell).isEmpty()) {
                             cell.setCellValue(impVal)
-                            if (spesa.valutaStraniera == 1) {
+                            if (isForeign) {
                                 val newStyle = workbook.createCellStyle()
                                 if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                                newStyle.fillForegroundColor = IndexedColors.GOLD.index
+                                newStyle.fillForegroundColor = orangeColorIndex
                                 newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                                 cell.cellStyle = newStyle
                             }
                         } else if (cell.cellType == CellType.NUMERIC) {
                             val currVal = cell.numericCellValue
                             cell.cellFormula = "$currVal+$impVal"
-                            val newStyle = workbook.createCellStyle()
-                            if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                            newStyle.fillForegroundColor = IndexedColors.YELLOW.index
-                            newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
-                            cell.cellStyle = newStyle
+                            if (isForeign || isAlreadyHighlighted) {
+                                val newStyle = workbook.createCellStyle()
+                                if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                                newStyle.fillForegroundColor = yellowColorIndex
+                                newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                                cell.cellStyle = newStyle
+                            }
                         } else if (cell.cellType == CellType.FORMULA) {
                             val currFormula = cell.cellFormula
                             cell.cellFormula = "$currFormula+$impVal"
-                            val newStyle = workbook.createCellStyle()
-                            if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                            newStyle.fillForegroundColor = IndexedColors.YELLOW.index
-                            newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
-                            cell.cellStyle = newStyle
-                        } else {
-                            cell.setCellValue(impVal)
-                            if (spesa.valutaStraniera == 1) {
+                            if (isForeign || isAlreadyHighlighted) {
                                 val newStyle = workbook.createCellStyle()
                                 if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
-                                newStyle.fillForegroundColor = IndexedColors.GOLD.index
+                                newStyle.fillForegroundColor = yellowColorIndex
+                                newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
+                                cell.cellStyle = newStyle
+                            }
+                        } else {
+                            cell.setCellValue(impVal)
+                            if (isForeign) {
+                                val newStyle = workbook.createCellStyle()
+                                if (existingStyle != null) newStyle.cloneStyleFrom(existingStyle)
+                                newStyle.fillForegroundColor = orangeColorIndex
                                 newStyle.fillPattern = FillPatternType.SOLID_FOREGROUND
                                 cell.cellStyle = newStyle
                             }
