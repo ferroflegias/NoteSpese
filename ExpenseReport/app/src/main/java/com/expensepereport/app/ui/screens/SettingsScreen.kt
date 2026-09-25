@@ -9,24 +9,70 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.expensepereport.app.data.AppSettingsRepository
+import com.expensepereport.app.data.SupabaseService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(settingsRepository: AppSettingsRepository) {
+fun SettingsScreen(
+    settingsRepository: AppSettingsRepository,
+    supabaseService: SupabaseService
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
     val currentUrl by settingsRepository.supabaseUrlFlow.collectAsState(initial = "")
     val currentKey by settingsRepository.supabaseKeyFlow.collectAsState(initial = "")
 
-    var urlInput by remember(currentUrl) { mutableStateOf(currentUrl) }
-    var keyInput by remember(currentKey) { mutableStateOf(currentKey) }
+    var hasCredentials by remember(currentUrl, currentKey) {
+        mutableStateOf(
+            currentUrl.isNotBlank() &&
+            currentUrl != AppSettingsRepository.DEFAULT_SUPABASE_URL &&
+            currentKey.isNotBlank() &&
+            currentKey != AppSettingsRepository.DEFAULT_SUPABASE_KEY
+        )
+    }
+
     var hasTemplate by remember { mutableStateOf(settingsRepository.hasCustomExcelTemplate()) }
 
+    var isTestingConnection by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
+
+    val supabaseTxtPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val content = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: ""
+                var parsedUrl = ""
+                var parsedKey = ""
+
+                content.lines().forEach { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.startsWith("SUPABASE_URL")) {
+                        parsedUrl = trimmed.substringAfter("=").trim().trim('"').trim('\'')
+                    } else if (trimmed.startsWith("SUPABASE_KEY")) {
+                        parsedKey = trimmed.substringAfter("=").trim().trim('"').trim('\'')
+                    }
+                }
+
+                if (parsedUrl.isNotBlank() && parsedKey.isNotBlank()) {
+                    scope.launch {
+                        settingsRepository.saveSupabaseCredentials(parsedUrl, parsedKey)
+                        hasCredentials = true
+                        statusMessage = "✅ File SUPABASE.txt caricato e credenziali salvate con successo!"
+                    }
+                } else {
+                    statusMessage = "⚠️ Struttura file non valida. Assicurati che contenga SUPABASE_URL e SUPABASE_KEY."
+                }
+            } catch (e: Exception) {
+                statusMessage = "Errore lettura file SUPABASE.txt: ${e.message}"
+            }
+        }
+    }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -38,9 +84,9 @@ fun SettingsScreen(settingsRepository: AppSettingsRepository) {
                     val success = settingsRepository.saveExcelTemplate(bytes)
                     if (success) {
                         hasTemplate = true
-                        statusMessage = "Modello Excel salvato con successo!"
+                        statusMessage = "✅ Modello Excel salvato con successo!"
                     } else {
-                        statusMessage = "Errore durante il salvataggio del modello."
+                        statusMessage = "Errore durante il salvataggio del modello Excel."
                     }
                 }
             } catch (e: Exception) {
@@ -57,34 +103,52 @@ fun SettingsScreen(settingsRepository: AppSettingsRepository) {
         Text("⚙️ Impostazioni App", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
-        OutlinedTextField(
-            value = urlInput,
-            onValueChange = { urlInput = it },
-            label = { Text("Supabase URL") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier.fillMaxWidth()
-        )
+        Text("🔐 Configurazione SUPABASE", style = MaterialTheme.typography.titleLarge)
         Spacer(modifier = Modifier.height(8.dp))
 
-        OutlinedTextField(
-            value = keyInput,
-            onValueChange = { keyInput = it },
-            label = { Text("Supabase Anon Key") },
-            visualTransformation = PasswordVisualTransformation(),
+        if (hasCredentials) {
+            Text("✅ Configurazione SUPABASE attiva.", color = MaterialTheme.colorScheme.primary)
+        } else {
+            Text("⚠️ Nessuna configurazione SUPABASE valida. Carica il file SUPABASE.txt.", color = MaterialTheme.colorScheme.error)
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        OutlinedButton(
+            onClick = { supabaseTxtPicker.launch("text/plain") },
             modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(modifier = Modifier.height(16.dp))
+        ) {
+            Text("📄 Carica File SUPABASE.txt")
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         Button(
             onClick = {
                 scope.launch {
-                    settingsRepository.saveSupabaseCredentials(urlInput, keyInput)
-                    statusMessage = "Credenziali Supabase salvate!"
+                    isTestingConnection = true
+                    statusMessage = "Verifica connessione a SUPABASE in corso..."
+                    val success = withContext(Dispatchers.IO) {
+                        try {
+                            supabaseService.getSpese()
+                            true
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                            false
+                        }
+                    }
+                    isTestingConnection = false
+                    if (success) {
+                        statusMessage = "🎉 Connessione a SUPABASE riuscita con successo!"
+                    } else {
+                        statusMessage = "❌ Errore di connessione a SUPABASE! Verifica URL e Key."
+                    }
                 }
             },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isTestingConnection
         ) {
-            Text("💾 Salva Credenziali Supabase")
+            Text(if (isTestingConnection) "Verifica in corso..." else "⚡ Test Connessione SUPABASE")
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 24.dp))

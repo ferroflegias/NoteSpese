@@ -42,12 +42,10 @@ fun ReportsScreen(supabaseService: SupabaseService) {
     }
 
     val totaleMese = monthSpese.sumOf { it.importo }
-    val speseTelepass = monthSpese.filter { it.categoria == "TELEPASS" }.sumOf { it.importo }
-    val speseCarbCarta = monthSpese.filter { it.categoria == "CARBURANTE_CARTA" }.sumOf { it.importo }
+    val totaleCC = monthSpese.filter { it.metodoPagamento == "CC (Carta)" || it.metodoPagamento == "CC" }.sumOf { it.importo }
     val totaleCash = monthSpese.filter { it.metodoPagamento == "Contanti" }.sumOf { it.importo }
-
-    val totaleSenzaTelepass = totaleMese - speseTelepass
-    val totaleSenzaTelepassECarb = totaleMese - speseTelepass - speseCarbCarta
+    val totaleCartaCarburante = monthSpese.filter { it.metodoPagamento == "Carta Carburante" }.sumOf { it.importo }
+    val totaleTelepass = monthSpese.filter { it.categoria == "TELEPASS" }.sumOf { it.importo }
 
     Column(
         modifier = Modifier
@@ -108,12 +106,14 @@ fun ReportsScreen(supabaseService: SupabaseService) {
                     Text("Totale Generale Mese:", style = MaterialTheme.typography.titleMedium)
                     Text("€ ${String.format(Locale.US, "%.2f", totaleMese)}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
 
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Totale Cash (💰 Contanti): € ${String.format(Locale.US, "%.2f", totaleCash)}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary)
-                    Text("Totale (Senza Telepass): € ${String.format(Locale.US, "%.2f", totaleSenzaTelepass)}")
-                    Text("Totale (Senza Telepass & Carta Carb.): € ${String.format(Locale.US, "%.2f", totaleSenzaTelepassECarb)}")
-                    Text("Totale Telepass: € ${String.format(Locale.US, "%.2f", speseTelepass)}")
-                    Text("Totale Carta Carburante: € ${String.format(Locale.US, "%.2f", speseCarbCarta)}")
+                    Spacer(modifier = Modifier.height(12.dp))
+                    HorizontalDivider()
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text("1) Totale CC (💳 Carta): € ${String.format(Locale.US, "%.2f", totaleCC)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("2) Totale Cash (💰 Contanti): € ${String.format(Locale.US, "%.2f", totaleCash)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("3) Totale Carta Carburante (💳⛽): € ${String.format(Locale.US, "%.2f", totaleCartaCarburante)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("4) Totale Telepass (🛣️): € ${String.format(Locale.US, "%.2f", totaleTelepass)}", style = MaterialTheme.typography.bodyLarge)
                 }
             }
 

@@ -131,7 +131,10 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             composable(Screen.Settings.route) {
-                                SettingsScreen(settingsRepository = settingsRepository)
+                                SettingsScreen(
+                                    settingsRepository = settingsRepository,
+                                    supabaseService = supabaseService
+                                )
                             }
                         }
                     }
