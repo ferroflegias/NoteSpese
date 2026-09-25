@@ -1,5 +1,7 @@
 package com.expensepereport.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,6 +15,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.SpesaInsert
@@ -73,6 +76,31 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         if (success && cameraTempUri != null) {
             imageUri = cameraTempUri
             pdfUri = null
+        }
+    }
+
+    fun launchCamera() {
+        try {
+            val uri = createTempImageUri()
+            if (uri != null) {
+                cameraTempUri = uri
+                cameraLauncher.launch(uri)
+            } else {
+                statusMessage = "⚠️ Impossibile creare il file temporaneo per la fotocamera."
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            statusMessage = "⚠️ Errore nell'apertura della fotocamera: ${e.localizedMessage ?: e.message}"
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            launchCamera()
+        } else {
+            statusMessage = "⚠️ Permesso Fotocamera necessario per scattare una foto."
         }
     }
 
@@ -376,10 +404,15 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             confirmButton = {
                 Button(onClick = {
                     showPhotoOptionsDialog = false
-                    val uri = createTempImageUri()
-                    if (uri != null) {
-                        cameraTempUri = uri
-                        cameraLauncher.launch(uri)
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
+
+                    if (hasPermission) {
+                        launchCamera()
+                    } else {
+                        cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                     }
                 }) {
                     Text("📷 Scatta Foto")
