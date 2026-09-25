@@ -84,7 +84,7 @@ fun ExportScreen(
             Text("⚠️ Nessun modello Excel caricato nelle Impostazioni! Carica prima il file .xlsx nelle Impostazioni.", color = MaterialTheme.colorScheme.error)
         } else {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("Mese Singolo", "Range Mesi", "Anno Completo").forEach { mode ->
+                listOf("Mese Singolo", "Range Mesi", "Anno").forEach { mode ->
                     FilterChip(
                         selected = excelMode == mode,
                         onClick = { excelMode = mode },
@@ -128,7 +128,7 @@ fun ExportScreen(
 
                         isGeneratingExcel = true
                         val modeCode = when (excelMode) {
-                            "Anno Completo" -> "anno"
+                            "Anno" -> "anno"
                             "Range Mesi" -> "range"
                             else -> "singolo"
                         }

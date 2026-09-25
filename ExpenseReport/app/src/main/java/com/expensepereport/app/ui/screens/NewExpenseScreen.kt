@@ -39,11 +39,11 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
     var destInput by remember { mutableStateOf("") }
     var scopoInput by remember { mutableStateOf("") }
 
-    val categoryOptions = listOf("Bar/Rist/Alb", "Parcheggio/Taxi", "Carburante", "Telepass", "Nolo", "Altro")
-    var selectedCategory by remember { mutableStateOf("Bar/Rist/Alb") }
+    val categoryOptions = listOf("🍴🛌🏻🍺", "🅿️🚕✈️🚅", "⛽", "🛣️", "Nolo 🚗", "Altro")
+    var selectedCategory by remember { mutableStateOf("🍴🛌🏻🍺") }
 
-    val paymentOptions = listOf("CC", "Contanti", "Carta Carburante")
-    var selectedPayment by remember { mutableStateOf("CC") }
+    val paymentOptions = listOf("💳", "💰", "💳⛽")
+    var selectedPayment by remember { mutableStateOf("💳") }
 
     var amountInput by remember { mutableStateOf("") }
     var isForeignCurrency by remember { mutableStateOf(false) }
@@ -87,13 +87,13 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                 onClick = { photoPicker.launch("image/*") },
                 modifier = Modifier.weight(1f)
             ) {
-                Text("📷 Scegli Foto")
+                Text("Foto 📷🖼️")
             }
             OutlinedButton(
                 onClick = { pdfPicker.launch("application/pdf") },
                 modifier = Modifier.weight(1f)
             ) {
-                Text("📄 Scegli PDF")
+                Text("PDF 📄")
             }
         }
 
@@ -117,12 +117,23 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                             dateInput = ocrRes.dataStr
                             destInput = ocrRes.destinazione
                             amountInput = String.format(Locale.US, "%.2f", ocrRes.importo)
-                            if (categoryOptions.contains(ocrRes.categoriaSuggerita)) {
-                                selectedCategory = ocrRes.categoriaSuggerita
+
+                            selectedCategory = when (ocrRes.categoriaSuggerita) {
+                                "Bar/Rist/Alb" -> "🍴🛌🏻🍺"
+                                "Parcheggio/Taxi" -> "🅿️🚕✈️🚅"
+                                "Carburante" -> "⛽"
+                                "Telepass" -> "🛣️"
+                                "Nolo" -> "Nolo 🚗"
+                                else -> "Altro"
                             }
-                            if (paymentOptions.contains(ocrRes.pagamentoSuggerito)) {
-                                selectedPayment = ocrRes.pagamentoSuggerito
+
+                            selectedPayment = when (ocrRes.pagamentoSuggerito) {
+                                "CC" -> "💳"
+                                "Contanti" -> "💰"
+                                "Carta Carburante" -> "💳⛽"
+                                else -> "💳"
                             }
+
                             noteInput = ocrRes.noteExtracted
                             statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit!"
                         } else {
@@ -190,7 +201,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             }
         }
 
-        if (selectedCategory != "Telepass") {
+        if (selectedCategory != "🛣️") {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Metodo Pagamento:", style = MaterialTheme.typography.bodyMedium)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -221,7 +232,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                     checked = isForeignCurrency,
                     onCheckedChange = { isForeignCurrency = it }
                 )
-                Text("Non-€")
+                Text("❌🇪🇺")
             }
         }
 
@@ -229,7 +240,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         OutlinedTextField(
             value = noteInput,
             onValueChange = { noteInput = it },
-            label = { Text("Notes") },
+            label = { Text("Note 📝") },
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -239,7 +250,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             onClick = {
                 scope.launch {
                     val doubleAmount = amountInput.replace(",", ".").toDoubleOrNull() ?: 0.0
-                    if (doubleAmount <= 0.0 && selectedCategory != "Telepass") {
+                    if (doubleAmount <= 0.0 && selectedCategory != "🛣️") {
                         statusMessage = "⚠️ Inserisci un importo valido!"
                         return@launch
                     }
@@ -247,17 +258,17 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                     isSaving = true
 
                     val catKey = when (selectedCategory) {
-                        "Bar/Rist/Alb" -> if (selectedPayment == "CC") "RISTORANTI_CC" else "RISTORANTI_CONTANTI"
-                        "Parcheggio/Taxi" -> if (selectedPayment == "CC") "PARCHEGGI_CC" else "PARCHEGGI_CONTANTI"
-                        "Carburante" -> if (selectedPayment == "Carta Carburante") "CARBURANTE_CARTA" else "CARBURANTE_CC"
-                        "Telepass" -> "TELEPASS"
-                        "Nolo" -> "NOLO"
+                        "🍴🛌🏻🍺" -> if (selectedPayment == "💳") "RISTORANTI_CC" else "RISTORANTI_CONTANTI"
+                        "🅿️🚕✈️🚅" -> if (selectedPayment == "💳") "PARCHEGGI_CC" else "PARCHEGGI_CONTANTI"
+                        "⛽" -> if (selectedPayment == "💳⛽") "CARBURANTE_CARTA" else "CARBURANTE_CC"
+                        "🛣️" -> "TELEPASS"
+                        "Nolo 🚗" -> "NOLO"
                         else -> "ALTRO"
                     }
 
-                    val metodoStr = if (selectedCategory == "Telepass") null else when (selectedPayment) {
-                        "CC" -> "CC (Carta)"
-                        "Contanti" -> "Contanti"
+                    val metodoStr = if (selectedCategory == "🛣️") null else when (selectedPayment) {
+                        "💳" -> "CC (Carta)"
+                        "💰" -> "Contanti"
                         else -> "Carta Carburante"
                     }
 
@@ -317,7 +328,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             modifier = Modifier.fillMaxWidth(),
             enabled = !isSaving
         ) {
-            Text(if (isSaving) "Salvataggio..." else "💾 Salva Spesa su Supabase")
+            Text(if (isSaving) "Salvataggio..." else "💾 Salva Spesa")
         }
 
         if (statusMessage.isNotEmpty()) {

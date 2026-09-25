@@ -44,6 +44,7 @@ fun ReportsScreen(supabaseService: SupabaseService) {
     val totaleMese = monthSpese.sumOf { it.importo }
     val speseTelepass = monthSpese.filter { it.categoria == "TELEPASS" }.sumOf { it.importo }
     val speseCarbCarta = monthSpese.filter { it.categoria == "CARBURANTE_CARTA" }.sumOf { it.importo }
+    val totaleCash = monthSpese.filter { it.metodoPagamento == "Contanti" }.sumOf { it.importo }
 
     val totaleSenzaTelepass = totaleMese - speseTelepass
     val totaleSenzaTelepassECarb = totaleMese - speseTelepass - speseCarbCarta
@@ -108,6 +109,7 @@ fun ReportsScreen(supabaseService: SupabaseService) {
                     Text("€ ${String.format(Locale.US, "%.2f", totaleMese)}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
 
                     Spacer(modifier = Modifier.height(8.dp))
+                    Text("Totale Cash (💰 Contanti): € ${String.format(Locale.US, "%.2f", totaleCash)}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.secondary)
                     Text("Totale (Senza Telepass): € ${String.format(Locale.US, "%.2f", totaleSenzaTelepass)}")
                     Text("Totale (Senza Telepass & Carta Carb.): € ${String.format(Locale.US, "%.2f", totaleSenzaTelepassECarb)}")
                     Text("Totale Telepass: € ${String.format(Locale.US, "%.2f", speseTelepass)}")
