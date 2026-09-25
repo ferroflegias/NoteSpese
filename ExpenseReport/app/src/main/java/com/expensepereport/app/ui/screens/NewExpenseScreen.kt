@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SupabaseService
@@ -20,6 +21,7 @@ import com.expensepereport.app.util.OcrAnalyzer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.InputStream
 import java.text.SimpleDateFormat
 import java.util.*
@@ -31,6 +33,9 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
 
     var imageUri by remember { mutableStateOf<Uri?>(null) }
     var pdfUri by remember { mutableStateOf<Uri?>(null) }
+
+    var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
+    var showPhotoOptionsDialog by remember { mutableStateOf(false) }
 
     var isAnalyzing by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
@@ -51,7 +56,8 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
 
     var statusMessage by remember { mutableStateOf("") }
 
-    val photoPicker = rememberLauncherForActivityResult(
+    // Launcher for selecting photo from Album / Gallery / Drive
+    val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
@@ -60,12 +66,36 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         }
     }
 
+    // Launcher for taking photo with Camera
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        if (success && cameraTempUri != null) {
+            imageUri = cameraTempUri
+            pdfUri = null
+        }
+    }
+
+    // Launcher for selecting PDF
     val pdfPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             pdfUri = uri
             imageUri = null
+        }
+    }
+
+    fun createTempImageUri(): Uri? {
+        return try {
+            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir).apply {
+                createNewFile()
+                deleteOnExit()
+            }
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
     }
 
@@ -84,7 +114,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             OutlinedButton(
-                onClick = { photoPicker.launch("image/*") },
+                onClick = { showPhotoOptionsDialog = true },
                 modifier = Modifier.weight(1f)
             ) {
                 Text("Foto 📷🖼️")
@@ -335,5 +365,34 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             Spacer(modifier = Modifier.height(12.dp))
             Text(statusMessage, style = MaterialTheme.typography.bodyMedium)
         }
+    }
+
+    // Dialog for Photo Option: Camera Scatto vs. Album / Gallery / Drive
+    if (showPhotoOptionsDialog) {
+        AlertDialog(
+            onDismissRequest = { showPhotoOptionsDialog = false },
+            title = { Text("Carica Foto 📷🖼️") },
+            text = { Text("Scegli come inserire la foto dello scontrino:") },
+            confirmButton = {
+                Button(onClick = {
+                    showPhotoOptionsDialog = false
+                    val uri = createTempImageUri()
+                    if (uri != null) {
+                        cameraTempUri = uri
+                        cameraLauncher.launch(uri)
+                    }
+                }) {
+                    Text("📷 Scatta Foto")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = {
+                    showPhotoOptionsDialog = false
+                    galleryPicker.launch("image/*")
+                }) {
+                    Text("🖼️ Scegli da Album / Drive")
+                }
+            }
+        )
     }
 }

@@ -29,11 +29,11 @@ import com.expensepereport.app.ui.screens.ReportsScreen
 import com.expensepereport.app.ui.screens.SettingsScreen
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
-    object NewExpense : Screen("new_expense", "Nuova Spesa", Icons.Filled.Add)
+    object NewExpense : Screen("new_expense", "Spesa", Icons.Filled.Add)
     object Records : Screen("records", "Registri", Icons.AutoMirrored.Filled.List)
     object Reports : Screen("reports", "Report", Icons.Filled.BarChart)
     object Export : Screen("export", "Export", Icons.Filled.Share)
-    object Settings : Screen("settings", "Impostazioni", Icons.Filled.Settings)
+    object Settings : Screen("settings", "Settings", Icons.Filled.Settings)
 }
 
 @Composable
