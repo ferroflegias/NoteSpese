@@ -69,6 +69,19 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         }
     }
 
+    fun createTempImageUri(): Uri? {
+        return try {
+            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir).apply {
+                createNewFile()
+                deleteOnExit()
+            }
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     // Launcher for taking photo with Camera
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
@@ -111,19 +124,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         if (uri != null) {
             pdfUri = uri
             imageUri = null
-        }
-    }
-
-    fun createTempImageUri(): Uri? {
-        return try {
-            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir).apply {
-                createNewFile()
-                deleteOnExit()
-            }
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
         }
     }
 
