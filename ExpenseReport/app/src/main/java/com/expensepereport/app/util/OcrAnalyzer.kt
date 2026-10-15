@@ -3,7 +3,11 @@ package com.expensepereport.app.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.graphics.pdf.PdfRenderer
+import android.media.ExifInterface
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
@@ -26,8 +30,13 @@ data class OcrResult(
 
 object OcrAnalyzer {
 
-    suspend fun analyzeReceipt(context: Context, imageUri: Uri): OcrResult? {
-        val bitmap = loadBitmapFromUri(context, imageUri) ?: return null
+    suspend fun analyzeReceipt(context: Context, uri: Uri, isPdf: Boolean = false): OcrResult? {
+        val bitmap = if (isPdf) {
+            renderPdfFirstPageToBitmap(context, uri)
+        } else {
+            loadBitmapFromUri(context, uri) ?: renderPdfFirstPageToBitmap(context, uri)
+        } ?: return null
+
         val inputImage = InputImage.fromBitmap(bitmap, 0)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
@@ -143,8 +152,60 @@ object OcrAnalyzer {
 
     private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap? {
         return try {
-            val inputStream: InputStream? = context.contentResolver.openInputStream(uri)
-            BitmapFactory.decodeStream(inputStream)
+            val inputStream: InputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val bitmap = BitmapFactory.decodeStream(inputStream)
+            inputStream.close()
+
+            if (bitmap == null) return null
+
+            val exifStream = context.contentResolver.openInputStream(uri)
+            val exif = exifStream?.let { ExifInterface(it) }
+            val orientation = exif?.getAttributeInt(
+                ExifInterface.TAG_ORIENTATION,
+                ExifInterface.ORIENTATION_UNDEFINED
+            ) ?: ExifInterface.ORIENTATION_UNDEFINED
+            exifStream?.close()
+
+            val matrix = Matrix()
+            when (orientation) {
+                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                else -> return bitmap
+            }
+
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun renderPdfFirstPageToBitmap(context: Context, pdfUri: Uri): Bitmap? {
+        return try {
+            val pfd: ParcelFileDescriptor? = context.contentResolver.openFileDescriptor(pdfUri, "r")
+            if (pfd != null) {
+                val pdfRenderer = PdfRenderer(pfd)
+                if (pdfRenderer.pageCount > 0) {
+                    val page = pdfRenderer.openPage(0)
+                    val bitmap = Bitmap.createBitmap(
+                        page.width * 2,
+                        page.height * 2,
+                        Bitmap.Config.ARGB_8888
+                    )
+                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    page.close()
+                    pdfRenderer.close()
+                    pfd.close()
+                    bitmap
+                } else {
+                    pdfRenderer.close()
+                    pfd.close()
+                    null
+                }
+            } else {
+                null
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             null

@@ -20,6 +20,7 @@ import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -40,6 +41,9 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showPhotoOptionsDialog by remember { mutableStateOf(false) }
 
+    var cropSourceUri by remember { mutableStateOf<Uri?>(null) }
+    var showCropDialog by remember { mutableStateOf(false) }
+
     var isAnalyzing by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
 
@@ -59,13 +63,17 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
 
     var statusMessage by remember { mutableStateOf("") }
 
+    fun startCropFlow(sourceUri: Uri) {
+        cropSourceUri = sourceUri
+        showCropDialog = true
+    }
+
     // Launcher for selecting photo from Album / Gallery / Drive
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            imageUri = uri
-            pdfUri = null
+            startCropFlow(uri)
         }
     }
 
@@ -87,8 +95,7 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         contract = ActivityResultContracts.TakePicture()
     ) { success: Boolean ->
         if (success && cameraTempUri != null) {
-            imageUri = cameraTempUri
-            pdfUri = null
+            cameraTempUri?.let { uri -> startCropFlow(uri) }
         }
     }
 
@@ -165,11 +172,18 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                     .height(180.dp)
             )
             Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { startCropFlow(uri) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("✂️ Ritaglia Foto")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = {
                     scope.launch {
                         isAnalyzing = true
-                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri) }
+                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf = false) }
                         isAnalyzing = false
                         if (ocrRes != null) {
                             dateInput = ocrRes.dataStr
@@ -206,9 +220,49 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
             }
         }
 
-        pdfUri?.let {
+        pdfUri?.let { uri ->
             Spacer(modifier = Modifier.height(8.dp))
-            Text("📄 PDF Selezionato: $it", style = MaterialTheme.typography.bodyMedium)
+            Text("📄 PDF Selezionato: $uri", style = MaterialTheme.typography.bodyMedium)
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    scope.launch {
+                        isAnalyzing = true
+                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf = true) }
+                        isAnalyzing = false
+                        if (ocrRes != null) {
+                            dateInput = ocrRes.dataStr
+                            destInput = ocrRes.destinazione
+                            amountInput = String.format(Locale.US, "%.2f", ocrRes.importo)
+
+                            selectedCategory = when (ocrRes.categoriaSuggerita) {
+                                "Bar/Rist/Alb" -> "🍴🛌🏻🍺"
+                                "Parcheggio/Taxi" -> "🅿️🚕✈️🚅"
+                                "Carburante" -> "⛽"
+                                "Telepass" -> "🛣️"
+                                "Nolo" -> "Nolo 🚗"
+                                else -> "Altro"
+                            }
+
+                            selectedPayment = when (ocrRes.pagamentoSuggerito) {
+                                "CC" -> "💳"
+                                "Contanti" -> "💰"
+                                "Carta Carburante" -> "💳⛽"
+                                else -> "💳"
+                            }
+
+                            noteInput = ocrRes.noteExtracted
+                            statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit dal PDF!"
+                        } else {
+                            statusMessage = "⚠️ Nessun testo rilevato nel PDF."
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isAnalyzing
+            ) {
+                Text(if (isAnalyzing) "Analisi OCR in corso..." else "🔍 Estrai Testo con OCR Locale ML Kit")
+            }
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
@@ -425,6 +479,26 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                 }) {
                     Text("🖼️ Scegli da Album / Drive")
                 }
+            }
+        )
+    }
+
+    // Dialog for Cropping Image
+    if (showCropDialog && cropSourceUri != null) {
+        CropImageDialog(
+            sourceUri = cropSourceUri!!,
+            onCropSuccess = { croppedUri ->
+                imageUri = croppedUri
+                pdfUri = null
+                showCropDialog = false
+            },
+            onDismiss = {
+                // If crop dismissed, use source image
+                if (imageUri == null) {
+                    imageUri = cropSourceUri
+                    pdfUri = null
+                }
+                showCropDialog = false
             }
         )
     }
