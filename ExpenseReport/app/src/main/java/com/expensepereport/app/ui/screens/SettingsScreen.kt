@@ -1,6 +1,5 @@
 package com.expensepereport.app.ui.screens
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,11 +34,19 @@ fun SettingsScreen(
         mutableStateOf(GoogleDriveService.getLastSignedInAccount(context))
     }
 
+    val savedEmail by settingsRepository.googleAccountEmailFlow.collectAsState(initial = "")
+    var currentEmail by remember(savedEmail, googleAccount) {
+        mutableStateOf(savedEmail.ifBlank { googleAccount?.email ?: "" })
+    }
+
     var hasTemplate by remember { mutableStateOf(settingsRepository.hasCustomExcelTemplate()) }
 
     val backupEnabled by settingsRepository.backupEnabledFlow.collectAsState(initial = true)
     val backupHour by settingsRepository.backupHourFlow.collectAsState(initial = 2)
     val backupMinute by settingsRepository.backupMinuteFlow.collectAsState(initial = 0)
+    val savedGdriveUrl by settingsRepository.gdriveFolderUrlFlow.collectAsState(initial = "")
+
+    var gdriveUrlInput by remember(savedGdriveUrl) { mutableStateOf(savedGdriveUrl) }
 
     var selectedHour by remember(backupHour) { mutableStateOf(backupHour) }
     var selectedMinute by remember(backupMinute) { mutableStateOf(backupMinute) }
@@ -50,7 +57,6 @@ fun SettingsScreen(
     var availableBackups by remember { mutableStateOf<List<File>>(emptyList()) }
     var showRestoreDialog by remember { mutableStateOf(false) }
 
-    // Google Sign-In Launcher
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -59,11 +65,15 @@ fun SettingsScreen(
             try {
                 val account = task.getResult(ApiException::class.java)
                 googleAccount = account
+                account?.email?.let { email ->
+                    currentEmail = email
+                    scope.launch { settingsRepository.saveGoogleAccountEmail(email) }
+                }
                 statusMessage = "🎉 Accesso Google effettuato con successo: ${account?.email}"
             } catch (e: ApiException) {
                 val errorReason = when (e.statusCode) {
-                    12500 -> "12500 (Configurazione OAuth Google Cloud Console richiesta per la firma dell'APK)"
                     10 -> "10 (DEVELOPER_ERROR: Registrare l'impronta SHA-1 della chiave APK su Google Cloud Console)"
+                    12500 -> "12500 (Configurazione Client ID OAuth richiesta)"
                     7 -> "7 (NETWORK_ERROR: Nessuna connessione ad Internet)"
                     4 -> "4 (SIGN_IN_REQUIRED)"
                     else -> "Codice errore Google: ${e.statusCode}"
@@ -77,7 +87,6 @@ fun SettingsScreen(
         }
     }
 
-    // Database SQLite / JSON Import Launcher
     val dbImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -96,7 +105,6 @@ fun SettingsScreen(
         }
     }
 
-    // Excel Template Launcher
     val excelPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -131,61 +139,88 @@ fun SettingsScreen(
         Text("☁️ Google Drive & Account", style = MaterialTheme.typography.titleLarge)
         Spacer(modifier = Modifier.height(8.dp))
 
-        if (googleAccount != null) {
-            Text("✅ Connesso come: ${googleAccount?.email}", color = MaterialTheme.colorScheme.primary)
+        if (currentEmail.isNotBlank()) {
+            Text("✅ Account Google attivo: $currentEmail", color = MaterialTheme.colorScheme.primary)
             Spacer(modifier = Modifier.height(8.dp))
+        }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = {
-                        scope.launch {
-                            val account = googleAccount ?: return@launch
-                            val url = googleDriveService.getAttachmentsFolderUrl(account)
-                            if (url != null) {
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    statusMessage = "Impossibile aprire il browser/Drive app."
-                                }
-                            } else {
-                                statusMessage = "Errore nel recupero dell'URL della cartella GDrive."
+        OutlinedTextField(
+            value = currentEmail,
+            onValueChange = {
+                currentEmail = it
+                scope.launch { settingsRepository.saveGoogleAccountEmail(it) }
+            },
+            label = { Text("Email Account Google") },
+            placeholder = { Text("tuo.account@gmail.com") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+            value = gdriveUrlInput,
+            onValueChange = {
+                gdriveUrlInput = it
+                scope.launch { settingsRepository.saveGdriveFolderUrl(it) }
+            },
+            label = { Text("Link / URL Cartella Google Drive Allegati") },
+            placeholder = { Text("https://drive.google.com/drive/folders/...") },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = {
+                    scope.launch {
+                        val urlToOpen = if (gdriveUrlInput.isNotBlank()) {
+                            gdriveUrlInput
+                        } else if (currentEmail.isNotBlank()) {
+                            googleDriveService.getAttachmentsFolderUrl(currentEmail)
+                        } else null
+
+                        if (!urlToOpen.isNullOrBlank()) {
+                            try {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(urlToOpen))
+                                context.startActivity(intent)
+                            } catch (e: Exception) {
+                                statusMessage = "Impossibile aprire il link Google Drive."
                             }
+                        } else {
+                            statusMessage = "Inserisci l'email Google o incolla il link della cartella sopra."
                         }
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("📂 Cartella GDrive")
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        val client = GoogleSignIn.getClient(context, GoogleDriveService.getGoogleSignInOptions())
-                        client.signOut().addOnCompleteListener {
-                            googleAccount = null
-                            statusMessage = "Disconnesso da Google."
-                        }
-                    },
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Text("Disconnetti")
-                }
+                    }
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("📂 Apri Cartella GDrive")
             }
-        } else {
-            Text("⚠️ Nessun account Google connesso. Accedi per salvare allegati e backup su Google Drive.", color = MaterialTheme.colorScheme.error)
-            Spacer(modifier = Modifier.height(8.dp))
 
             Button(
                 onClick = {
                     val client = GoogleSignIn.getClient(context, GoogleDriveService.getGoogleSignInOptions())
                     googleSignInLauncher.launch(client.signInIntent)
                 },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.weight(1f)
             ) {
-                Text("🔑 Accedi con Google")
+                Text("🔑 Accedi Google")
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text("🔑 Info Configurazione OAuth Google Cloud Console", style = MaterialTheme.typography.titleSmall)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text("Package Name: com.expensepereport.app", style = MaterialTheme.typography.bodySmall)
+                Text("Impronta SHA-1 APK Debug:", style = MaterialTheme.typography.bodySmall)
+                Text("F3:06:DE:79:09:4C:D0:59:B1:82:27:47:53:24:28:6A:17:C5:64:50", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
             }
         }
 
@@ -245,16 +280,15 @@ fun SettingsScreen(
 
         Button(
             onClick = {
-                val account = googleAccount
-                if (account == null) {
-                    statusMessage = "⚠️ Accedi prima con Google per eseguire il backup."
+                if (currentEmail.isBlank()) {
+                    statusMessage = "⚠️ Inserisci l'email del tuo account Google per eseguire il backup."
                     return@Button
                 }
                 scope.launch {
                     isPerformingAction = true
                     statusMessage = "Esecuzione backup manuale su Google Drive..."
                     val dbFile = spesaRepository.getDatabaseFile()
-                    val success = googleDriveService.uploadDatabaseBackup(account, dbFile)
+                    val success = googleDriveService.uploadDatabaseBackup(currentEmail, dbFile)
                     isPerformingAction = false
                     if (success) {
                         statusMessage = "🎉 Backup salvato con successo nella cartella 'NoteSpese_Backups' su Google Drive!"
@@ -273,15 +307,14 @@ fun SettingsScreen(
 
         OutlinedButton(
             onClick = {
-                val account = googleAccount
-                if (account == null) {
-                    statusMessage = "⚠️ Accedi prima con Google per recuperare i backup."
+                if (currentEmail.isBlank()) {
+                    statusMessage = "⚠️ Inserisci l'email del tuo account Google per recuperare i backup."
                     return@OutlinedButton
                 }
                 scope.launch {
                     isPerformingAction = true
                     statusMessage = "Caricamento elenco backup da Google Drive..."
-                    availableBackups = googleDriveService.listBackups(account)
+                    availableBackups = googleDriveService.listBackups(currentEmail)
                     isPerformingAction = false
                     if (availableBackups.isNotEmpty()) {
                         showRestoreDialog = true
@@ -350,12 +383,11 @@ fun SettingsScreen(
                         TextButton(
                             onClick = {
                                 showRestoreDialog = false
-                                val account = googleAccount ?: return@TextButton
                                 scope.launch {
                                     isPerformingAction = true
                                     statusMessage = "Scaricamento e ripristino backup in corso..."
                                     val tempFile = java.io.File(context.cacheDir, "temp_restore.db")
-                                    val downloaded = googleDriveService.downloadBackup(account, file.id, tempFile)
+                                    val downloaded = googleDriveService.downloadBackup(currentEmail, file.id, tempFile)
                                     if (downloaded) {
                                         val restored = spesaRepository.restoreDatabaseFromFile(tempFile)
                                         tempFile.delete()

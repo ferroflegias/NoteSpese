@@ -18,11 +18,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
+import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.InputStream
@@ -31,6 +33,7 @@ import java.util.Locale
 @Composable
 fun RecordsScreen(
     spesaRepository: SpesaRepository,
+    settingsRepository: AppSettingsRepository,
     googleDriveService: GoogleDriveService
 ) {
     val context = LocalContext.current
@@ -256,7 +259,13 @@ fun RecordsScreen(
                                 val newUri = newImageUri ?: newPdfUri
 
                                 if (newUri != null) {
-                                    val account = GoogleDriveService.getLastSignedInAccount(context)
+                                    val savedEmail = settingsRepository.googleAccountEmailFlow.first()
+                                    val accountEmail = if (savedEmail.isNotBlank()) {
+                                        savedEmail
+                                    } else {
+                                        GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
+                                    }
+
                                     try {
                                         val inputStream: InputStream? = context.contentResolver.openInputStream(newUri)
                                         val bytes = inputStream?.readBytes()
@@ -264,9 +273,9 @@ fun RecordsScreen(
                                             val ext = if (newPdfUri != null) "pdf" else "jpg"
                                             val mime = if (newPdfUri != null) "application/pdf" else "image/jpeg"
 
-                                            if (account != null) {
+                                            if (accountEmail.isNotBlank()) {
                                                 finalAttachmentUrl = googleDriveService.uploadAttachment(
-                                                    account = account,
+                                                    accountName = accountEmail,
                                                     fileBytes = bytes,
                                                     dataSpesa = editDate,
                                                     extension = ext,

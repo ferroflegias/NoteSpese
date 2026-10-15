@@ -38,12 +38,12 @@ class GoogleDriveService(private val context: Context) {
         }
     }
 
-    private fun getDriveService(account: GoogleSignInAccount): Drive {
+    fun getDriveServiceForAccountName(accountName: String): Drive {
         val credential = GoogleAccountCredential.usingOAuth2(
             context,
             Collections.singleton(DriveScopes.DRIVE_FILE)
         )
-        credential.selectedAccount = account.account
+        credential.selectedAccountName = accountName
         return Drive.Builder(
             NetHttpTransport(),
             GsonFactory.getDefaultInstance(),
@@ -51,6 +51,10 @@ class GoogleDriveService(private val context: Context) {
         )
             .setApplicationName("PerExpenseReport")
             .build()
+    }
+
+    private fun getDriveService(account: GoogleSignInAccount): Drive {
+        return getDriveServiceForAccountName(account.email ?: account.account?.name ?: "")
     }
 
     private fun getOrCreateFolder(drive: Drive, folderName: String, parentFolderId: String? = null): String {
@@ -85,26 +89,23 @@ class GoogleDriveService(private val context: Context) {
     }
 
     suspend fun uploadAttachment(
-        account: GoogleSignInAccount,
+        accountName: String,
         fileBytes: ByteArray,
         dataSpesa: String,
         extension: String,
         contentType: String
     ): String? = withContext(Dispatchers.IO) {
         try {
-            val drive = getDriveService(account)
+            val drive = getDriveServiceForAccountName(accountName)
 
-            // 1. Root Attachments folder
             val rootFolderId = getOrCreateFolder(drive, ATTACHMENTS_ROOT_FOLDER)
 
-            // 2. Year & Month subfolders
             val year = if (dataSpesa.length >= 4) dataSpesa.substring(0, 4) else "2026"
             val month = if (dataSpesa.length >= 7) dataSpesa.substring(5, 7) else "01"
 
             val yearFolderId = getOrCreateFolder(drive, year, rootFolderId)
             val monthFolderId = getOrCreateFolder(drive, month, yearFolderId)
 
-            // 3. Create File
             val nowStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
             val filename = "rec_${dataSpesa}_${nowStr}.${extension}"
 
@@ -117,7 +118,6 @@ class GoogleDriveService(private val context: Context) {
                 .setFields("id, webViewLink, webContentLink")
                 .execute()
 
-            // Return relative GDrive path or web link
             uploadedFile.webViewLink ?: uploadedFile.id
         } catch (e: Exception) {
             e.printStackTrace()
@@ -125,12 +125,22 @@ class GoogleDriveService(private val context: Context) {
         }
     }
 
-    suspend fun uploadDatabaseBackup(
+    suspend fun uploadAttachment(
         account: GoogleSignInAccount,
+        fileBytes: ByteArray,
+        dataSpesa: String,
+        extension: String,
+        contentType: String
+    ): String? {
+        return uploadAttachment(account.email ?: "", fileBytes, dataSpesa, extension, contentType)
+    }
+
+    suspend fun uploadDatabaseBackup(
+        accountName: String,
         dbFile: java.io.File
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val drive = getDriveService(account)
+            val drive = getDriveServiceForAccountName(accountName)
             val backupFolderId = getOrCreateFolder(drive, BACKUPS_ROOT_FOLDER)
 
             val nowStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -147,13 +157,19 @@ class GoogleDriveService(private val context: Context) {
                 .setFields("id")
                 .execute()
 
-            // Automatically clean up backups older than 30 days
             cleanupOldBackups(drive, backupFolderId)
             true
         } catch (e: Exception) {
             e.printStackTrace()
             false
         }
+    }
+
+    suspend fun uploadDatabaseBackup(
+        account: GoogleSignInAccount,
+        dbFile: java.io.File
+    ): Boolean {
+        return uploadDatabaseBackup(account.email ?: "", dbFile)
     }
 
     private fun cleanupOldBackups(drive: Drive, backupFolderId: String) {
@@ -183,9 +199,9 @@ class GoogleDriveService(private val context: Context) {
         }
     }
 
-    suspend fun listBackups(account: GoogleSignInAccount): List<File> = withContext(Dispatchers.IO) {
+    suspend fun listBackups(accountName: String): List<File> = withContext(Dispatchers.IO) {
         try {
-            val drive = getDriveService(account)
+            val drive = getDriveServiceForAccountName(accountName)
             val backupFolderId = getOrCreateFolder(drive, BACKUPS_ROOT_FOLDER)
             val query = "'$backupFolderId' in parents and trashed=false"
             val result = drive.files().list()
@@ -201,12 +217,12 @@ class GoogleDriveService(private val context: Context) {
     }
 
     suspend fun downloadBackup(
-        account: GoogleSignInAccount,
+        accountName: String,
         fileId: String,
         targetFile: java.io.File
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val drive = getDriveService(account)
+            val drive = getDriveServiceForAccountName(accountName)
             val outputStream = FileOutputStream(targetFile)
             drive.files().get(fileId).executeMediaAndDownloadTo(outputStream)
             outputStream.flush()
@@ -218,9 +234,9 @@ class GoogleDriveService(private val context: Context) {
         }
     }
 
-    suspend fun getAttachmentsFolderUrl(account: GoogleSignInAccount): String? = withContext(Dispatchers.IO) {
+    suspend fun getAttachmentsFolderUrl(accountName: String): String? = withContext(Dispatchers.IO) {
         try {
-            val drive = getDriveService(account)
+            val drive = getDriveServiceForAccountName(accountName)
             val folderId = getOrCreateFolder(drive, ATTACHMENTS_ROOT_FOLDER)
             "https://drive.google.com/drive/folders/$folderId"
         } catch (e: Exception) {
