@@ -18,9 +18,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
+import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaInsert
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.SpesaRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,7 +29,10 @@ import java.io.InputStream
 import java.util.Locale
 
 @Composable
-fun RecordsScreen(supabaseService: SupabaseService) {
+fun RecordsScreen(
+    spesaRepository: SpesaRepository,
+    googleDriveService: GoogleDriveService
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -41,7 +45,7 @@ fun RecordsScreen(supabaseService: SupabaseService) {
         scope.launch {
             isLoading = true
             try {
-                speseList = withContext(Dispatchers.IO) { supabaseService.getSpese() }
+                speseList = spesaRepository.getSpese()
             } catch (e: Exception) {
                 statusMessage = "Errore caricamento spese: ${e.message}"
             }
@@ -190,7 +194,7 @@ fun RecordsScreen(supabaseService: SupabaseService) {
                     Text("📎 Allegato Corrente:", style = MaterialTheme.typography.titleSmall)
                     if (!spesa.allegatoPath.isNullOrBlank()) {
                         val pathLower = spesa.allegatoPath.lowercase()
-                        if (pathLower.endsWith(".pdf") || pathLower.contains(".pdf?")) {
+                        if (pathLower.startsWith("http://") || pathLower.startsWith("https://")) {
                             TextButton(onClick = {
                                 try {
                                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spesa.allegatoPath))
@@ -199,7 +203,7 @@ fun RecordsScreen(supabaseService: SupabaseService) {
                                     // Handle browser intent error
                                 }
                             }) {
-                                Text("📄 Apri Documento PDF Allegato")
+                                Text("📄 Visualizza Allegato in Google Drive / Web")
                             }
                         } else {
                             Image(
@@ -248,48 +252,45 @@ fun RecordsScreen(supabaseService: SupabaseService) {
                         scope.launch {
                             isUpdating = true
                             spesa.id?.let { id ->
-                                withContext(Dispatchers.IO) {
-                                    var finalAttachmentUrl = spesa.allegatoPath
+                                var finalAttachmentUrl = spesa.allegatoPath
+                                val newUri = newImageUri ?: newPdfUri
 
-                                    val newUri = newImageUri ?: newPdfUri
-                                    if (newUri != null) {
-                                        try {
-                                            val inputStream: InputStream? = context.contentResolver.openInputStream(newUri)
-                                            val bytes = inputStream?.readBytes()
-                                            if (bytes != null) {
-                                                val ext = if (newPdfUri != null) "pdf" else "jpg"
-                                                val mime = if (newPdfUri != null) "application/pdf" else "image/jpeg"
+                                if (newUri != null) {
+                                    val account = GoogleDriveService.getLastSignedInAccount(context)
+                                    try {
+                                        val inputStream: InputStream? = context.contentResolver.openInputStream(newUri)
+                                        val bytes = inputStream?.readBytes()
+                                        if (bytes != null) {
+                                            val ext = if (newPdfUri != null) "pdf" else "jpg"
+                                            val mime = if (newPdfUri != null) "application/pdf" else "image/jpeg"
 
-                                                // Delete old attachment if present
-                                                if (!spesa.allegatoPath.isNullOrBlank()) {
-                                                    supabaseService.deleteAttachment(spesa.allegatoPath)
-                                                }
-
-                                                finalAttachmentUrl = supabaseService.uploadAttachment(
+                                            if (account != null) {
+                                                finalAttachmentUrl = googleDriveService.uploadAttachment(
+                                                    account = account,
                                                     fileBytes = bytes,
                                                     dataSpesa = editDate,
                                                     extension = ext,
                                                     contentType = mime
                                                 )
                                             }
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
                                         }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
                                     }
-
-                                    val updatedSpesa = SpesaInsert(
-                                        data = editDate,
-                                        destinazione = editDest.ifBlank { null },
-                                        scopo = editScopo.ifBlank { null },
-                                        categoria = spesa.categoria,
-                                        metodoPagamento = spesa.metodoPagamento,
-                                        importo = editImporto.toDoubleOrNull() ?: spesa.importo,
-                                        note = editNote.ifBlank { null },
-                                        allegatoPath = finalAttachmentUrl,
-                                        valutaStraniera = spesa.valutaStraniera
-                                    )
-                                    supabaseService.updateSpesa(id, updatedSpesa)
                                 }
+
+                                val updatedSpesa = SpesaInsert(
+                                    data = editDate,
+                                    destinazione = editDest.ifBlank { null },
+                                    scopo = editScopo.ifBlank { null },
+                                    categoria = spesa.categoria,
+                                    metodoPagamento = spesa.metodoPagamento,
+                                    importo = editImporto.toDoubleOrNull() ?: spesa.importo,
+                                    note = editNote.ifBlank { null },
+                                    allegatoPath = finalAttachmentUrl,
+                                    valutaStraniera = spesa.valutaStraniera
+                                )
+                                spesaRepository.updateSpesa(id, updatedSpesa)
                                 selectedSpesa = null
                                 refreshList()
                             }
@@ -306,12 +307,7 @@ fun RecordsScreen(supabaseService: SupabaseService) {
                     onClick = {
                         scope.launch {
                             spesa.id?.let { id ->
-                                withContext(Dispatchers.IO) {
-                                    spesa.allegatoPath?.let { path ->
-                                        supabaseService.deleteAttachment(path)
-                                    }
-                                    supabaseService.deleteSpesa(id)
-                                }
+                                spesaRepository.deleteSpesa(id)
                                 selectedSpesa = null
                                 refreshList()
                             }

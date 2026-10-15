@@ -12,7 +12,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.expensepereport.app.data.AppSettingsRepository
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.util.DocumentGenerator
 import com.expensepereport.app.util.lastExcelError
 import kotlinx.coroutines.Dispatchers
@@ -23,7 +23,7 @@ import java.util.Calendar
 
 @Composable
 fun ExportScreen(
-    supabaseService: SupabaseService,
+    spesaRepository: SpesaRepository,
     settingsRepository: AppSettingsRepository
 ) {
     val context = LocalContext.current
@@ -138,7 +138,7 @@ fun ExportScreen(
                         val excelFile = withContext(Dispatchers.IO) {
                             DocumentGenerator.generateExcel(
                                 context = context,
-                                supabaseService = supabaseService,
+                                spesaRepository = spesaRepository,
                                 templateFile = template,
                                 year = yearInput,
                                 mode = modeCode,
@@ -186,7 +186,7 @@ fun ExportScreen(
                     val pdfFile = withContext(Dispatchers.IO) {
                         DocumentGenerator.generatePdfAttachments(
                             context = context,
-                            supabaseService = supabaseService,
+                            spesaRepository = spesaRepository,
                             year = yearInput,
                             month = pdfMonth
                         )

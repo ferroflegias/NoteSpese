@@ -9,14 +9,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.expensepereport.app.data.Spesa
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.util.DocumentGenerator
 import kotlinx.coroutines.launch
 import java.util.Calendar
 import java.util.Locale
 
 @Composable
-fun ReportsScreen(supabaseService: SupabaseService) {
+fun ReportsScreen(spesaRepository: SpesaRepository) {
     val scope = rememberCoroutineScope()
 
     var selectedYear by remember { mutableStateOf(2026) }
@@ -29,7 +29,7 @@ fun ReportsScreen(supabaseService: SupabaseService) {
         scope.launch {
             isLoading = true
             try {
-                monthSpese = supabaseService.getSpeseForMonth(selectedYear, selectedMonth)
+                monthSpese = spesaRepository.getSpeseForMonth(selectedYear, selectedMonth)
             } catch (e: Exception) {
                 e.printStackTrace()
             }
