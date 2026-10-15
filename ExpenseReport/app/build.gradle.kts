@@ -2,6 +2,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.serialization")
+    id("com.google.devtools.ksp")
 }
 
 android {
@@ -62,6 +63,7 @@ android {
             excludes += "META-INF/NOTICE"
             excludes += "META-INF/NOTICE.txt"
             excludes += "META-INF/notice.txt"
+            excludes += "META-INF/INDEX.LIST"
         }
     }
 }
@@ -80,8 +82,27 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
-    // Datastore for preferences (Supabase URL / Key)
+    // Datastore for preferences
     implementation("androidx.datastore:datastore-preferences:1.0.0")
+
+    // Room Database
+    val roomVersion = "2.6.1"
+    implementation("androidx.room:room-runtime:$roomVersion")
+    implementation("androidx.room:room-ktx:$roomVersion")
+    ksp("androidx.room:room-compiler:$roomVersion")
+
+    // WorkManager for scheduled daily backups
+    implementation("androidx.work:work-runtime-ktx:2.9.0")
+
+    // Google Sign-In & Google Drive API
+    implementation("com.google.android.gms:play-services-auth:20.7.0")
+    implementation("com.google.api-client:google-api-client-android:2.2.0") {
+        exclude(group = "org.apache.httpcomponents")
+    }
+    implementation("com.google.apis:google-api-services-drive:v3-rev20230822-2.0.0") {
+        exclude(group = "org.apache.httpcomponents")
+    }
+    implementation("com.google.http-client:google-http-client-gson:1.43.3")
 
     // ML Kit Text Recognition for OCR
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
@@ -92,7 +113,7 @@ dependencies {
     // Apache POI for Excel (.xlsx) manipulation
     implementation("org.apache.poi:poi-ooxml:5.2.5")
 
-    // Ktor Client & Kotlinx Serialization for Supabase HTTP APIs
+    // Ktor Client & Kotlinx Serialization
     implementation("io.ktor:ktor-client-android:2.3.8")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.8")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.8")

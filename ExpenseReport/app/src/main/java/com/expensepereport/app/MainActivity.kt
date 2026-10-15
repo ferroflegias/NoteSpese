@@ -21,7 +21,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.expensepereport.app.data.AppSettingsRepository
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.screens.ExportScreen
 import com.expensepereport.app.ui.screens.NewExpenseScreen
 import com.expensepereport.app.ui.screens.RecordsScreen
@@ -59,6 +60,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         val settingsRepository = AppSettingsRepository(applicationContext)
+        val spesaRepository = SpesaRepository(applicationContext)
+        val googleDriveService = GoogleDriveService(applicationContext)
 
         setContent {
             AppTheme {
@@ -67,13 +70,6 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background,
                     contentColor = contentColorFor(MaterialTheme.colorScheme.background)
                 ) {
-                    val supabaseUrl by settingsRepository.supabaseUrlFlow.collectAsState(initial = AppSettingsRepository.DEFAULT_SUPABASE_URL)
-                    val supabaseKey by settingsRepository.supabaseKeyFlow.collectAsState(initial = AppSettingsRepository.DEFAULT_SUPABASE_KEY)
-
-                    val supabaseService = remember(supabaseUrl, supabaseKey) {
-                        SupabaseService(supabaseUrl, supabaseKey)
-                    }
-
                     val navController = rememberNavController()
                     val items = listOf(
                         Screen.NewExpense,
@@ -116,24 +112,33 @@ class MainActivity : ComponentActivity() {
                             modifier = Modifier.padding(innerPadding)
                         ) {
                             composable(Screen.NewExpense.route) {
-                                NewExpenseScreen(supabaseService = supabaseService)
+                                NewExpenseScreen(
+                                    spesaRepository = spesaRepository,
+                                    settingsRepository = settingsRepository,
+                                    googleDriveService = googleDriveService
+                                )
                             }
                             composable(Screen.Records.route) {
-                                RecordsScreen(supabaseService = supabaseService)
+                                RecordsScreen(
+                                    spesaRepository = spesaRepository,
+                                    settingsRepository = settingsRepository,
+                                    googleDriveService = googleDriveService
+                                )
                             }
                             composable(Screen.Reports.route) {
-                                ReportsScreen(supabaseService = supabaseService)
+                                ReportsScreen(spesaRepository = spesaRepository)
                             }
                             composable(Screen.Export.route) {
                                 ExportScreen(
-                                    supabaseService = supabaseService,
+                                    spesaRepository = spesaRepository,
                                     settingsRepository = settingsRepository
                                 )
                             }
                             composable(Screen.Settings.route) {
                                 SettingsScreen(
                                     settingsRepository = settingsRepository,
-                                    supabaseService = supabaseService
+                                    spesaRepository = spesaRepository,
+                                    googleDriveService = googleDriveService
                                 )
                             }
                         }
