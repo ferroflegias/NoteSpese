@@ -18,12 +18,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
+import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -34,6 +36,7 @@ import java.util.*
 @Composable
 fun NewExpenseScreen(
     spesaRepository: SpesaRepository,
+    settingsRepository: AppSettingsRepository,
     googleDriveService: GoogleDriveService
 ) {
     val context = LocalContext.current
@@ -389,7 +392,13 @@ fun NewExpenseScreen(
                     val currentUri = imageUri ?: pdfUri
 
                     if (currentUri != null) {
-                        val account = GoogleDriveService.getLastSignedInAccount(context)
+                        val savedEmail = settingsRepository.googleAccountEmailFlow.first()
+                        val accountEmail = if (savedEmail.isNotBlank()) {
+                            savedEmail
+                        } else {
+                            GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
+                        }
+
                         try {
                             val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
                             val fileBytes = inputStream?.readBytes()
@@ -397,16 +406,15 @@ fun NewExpenseScreen(
                                 val ext = if (pdfUri != null) "pdf" else "jpg"
                                 val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
 
-                                if (account != null) {
+                                if (accountEmail.isNotBlank()) {
                                     attachmentUrl = googleDriveService.uploadAttachment(
-                                        account = account,
+                                        accountName = accountEmail,
                                         fileBytes = fileBytes,
                                         dataSpesa = dateInput,
                                         extension = ext,
                                         contentType = mime
                                     )
                                 } else {
-                                    // Local save as fallback
                                     val year = if (dateInput.length >= 4) dateInput.substring(0, 4) else "2026"
                                     val month = if (dateInput.length >= 7) dateInput.substring(5, 7) else "01"
                                     val localFolder = File(context.filesDir, "NoteSpese_Allegati/$year/$month")

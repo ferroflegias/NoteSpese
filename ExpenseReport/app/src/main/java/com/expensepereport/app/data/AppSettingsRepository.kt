@@ -25,6 +25,7 @@ class AppSettingsRepository(private val context: Context) {
         private val KEY_BACKUP_HOUR = intPreferencesKey("backup_hour")
         private val KEY_BACKUP_MINUTE = intPreferencesKey("backup_minute")
         private val KEY_GDRIVE_FOLDER_URL = stringPreferencesKey("gdrive_folder_url")
+        private val KEY_GOOGLE_ACCOUNT_EMAIL = stringPreferencesKey("google_account_email")
         private const val WORK_NAME_BACKUP = "daily_database_backup"
     }
 
@@ -42,6 +43,16 @@ class AppSettingsRepository(private val context: Context) {
 
     val gdriveFolderUrlFlow: Flow<String> = context.dataStore.data.map { prefs ->
         prefs[KEY_GDRIVE_FOLDER_URL] ?: ""
+    }
+
+    val googleAccountEmailFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[KEY_GOOGLE_ACCOUNT_EMAIL] ?: ""
+    }
+
+    suspend fun saveGoogleAccountEmail(email: String) {
+        context.dataStore.edit { prefs ->
+            prefs[KEY_GOOGLE_ACCOUNT_EMAIL] = email.trim()
+        }
     }
 
     suspend fun saveGdriveFolderUrl(url: String) {

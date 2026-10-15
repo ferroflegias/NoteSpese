@@ -114,12 +114,14 @@ class MainActivity : ComponentActivity() {
                             composable(Screen.NewExpense.route) {
                                 NewExpenseScreen(
                                     spesaRepository = spesaRepository,
+                                    settingsRepository = settingsRepository,
                                     googleDriveService = googleDriveService
                                 )
                             }
                             composable(Screen.Records.route) {
                                 RecordsScreen(
                                     spesaRepository = spesaRepository,
+                                    settingsRepository = settingsRepository,
                                     googleDriveService = googleDriveService
                                 )
                             }
