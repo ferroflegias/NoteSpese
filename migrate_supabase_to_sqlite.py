@@ -3,7 +3,7 @@
 Migraton script: Supabase -> SQLite / JSON + GDrive Folder Attachments Structure
 
 This script downloads all expense records from Supabase PostgreSQL table 'spese',
-creates a local SQLite database 'expense_report.db' and a 'spese_backup.json' file,
+creates a local SQLite database 'expense_report_import.db' and a 'spese_backup.json' file,
 and downloads all attachment files (photos and PDFs) from Supabase Storage bucket 'allegati-spese'
 organizing them in the Google Drive folder structure: NoteSpese_Allegati/YYYY/MM/filename.ext
 """
@@ -15,7 +15,6 @@ import sqlite3
 import urllib.request
 from datetime import datetime
 
-# Attempt to read secrets from .streamlit/secrets.toml or prompt user
 def get_supabase_credentials():
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -50,7 +49,6 @@ def main():
 
     print(f"Connecting to Supabase at: {url}")
 
-    # Fetch expenses via Supabase REST API directly
     req_url = f"{url.rstrip('/')}/rest/v1/spese?select=*&order=id.asc"
     req = urllib.request.Request(req_url, headers={
         "apikey": key,
@@ -66,12 +64,10 @@ def main():
 
     print(f"✅ Fetched {len(expenses_data)} expense records.")
 
-    # 1. Prepare Local Output Folders
     attachments_root = "NoteSpese_Allegati"
     os.makedirs(attachments_root, exist_ok=True)
 
-    # 2. Create Local SQLite Database (Matching Android Room Entity Schema)
-    db_filename = "expense_report.db"
+    db_filename = "expense_report_import.db"
     if os.path.exists(db_filename):
         os.remove(db_filename)
 
@@ -80,7 +76,7 @@ def main():
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS spese (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
             data TEXT NOT NULL,
             destinazione TEXT,
             scopo TEXT,
@@ -114,15 +110,12 @@ def main():
 
         new_allegato_relative_path = None
 
-        # Process attachment if exists
         if original_allegato_url and isinstance(original_allegato_url, str) and original_allegato_url.startswith("http"):
             try:
-                # Parse YYYY and MM
                 dt = datetime.strptime(data_str, "%Y-%m-%d")
                 year_str = dt.strftime("%Y")
                 month_str = dt.strftime("%m")
 
-                # Extract original filename or create clean name
                 clean_url = original_allegato_url.split("?")[0]
                 ext = clean_url.split(".")[-1].lower()
                 if ext not in ["jpg", "jpeg", "png", "pdf"]:
@@ -136,12 +129,10 @@ def main():
                 os.makedirs(target_dir, exist_ok=True)
                 target_file_path = os.path.join(target_dir, filename)
 
-                # Download file
                 print(f"  Downloading attachment #{record_id} -> {target_file_path} ...")
                 urllib.request.urlretrieve(original_allegato_url, target_file_path)
                 downloaded_attachments += 1
 
-                # Relative path for GDrive folder structure
                 new_allegato_relative_path = f"{year_str}/{month_str}/{filename}"
             except Exception as att_err:
                 print(f"  ⚠️ Warning: Could not download attachment for ID #{record_id}: {att_err}")
@@ -159,7 +150,6 @@ def main():
     conn.commit()
     conn.close()
 
-    # 3. Save JSON Backup
     with open("spese_backup.json", "w", encoding="utf-8") as f_json:
         json.dump(expenses_data, f_json, indent=2, ensure_ascii=False)
 
@@ -167,8 +157,8 @@ def main():
     print("🎉 MIGRATION SUCCESSFUL!")
     print(f"📊 Total Expense Records Migrated: {migrated_count}")
     print(f"🖼️ Total Attachments Downloaded: {downloaded_attachments}")
-    print(f"📁 Local SQLite File Generated: {os.path.abspath(db_filename)}")
-    print(f"📄 Local JSON File Generated: {os.path.abspath('spese_backup.json')}")
+    print(f"📁 Import Database File: {os.path.abspath(db_filename)}")
+    print(f"📄 JSON Backup File: {os.path.abspath('spese_backup.json')}")
     print(f"📂 Attachments Organized In: {os.path.abspath(attachments_root)}/YYYY/MM/")
     print("="*60)
 

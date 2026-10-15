@@ -18,11 +18,9 @@ import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.SpesaRepository
 import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.common.api.ApiException
 import com.google.api.services.drive.model.File
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -56,32 +54,43 @@ fun SettingsScreen(
     val googleSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
+        if (result.data != null) {
             val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
             try {
-                val account = task.getResult(Exception::class.java)
+                val account = task.getResult(ApiException::class.java)
                 googleAccount = account
-                statusMessage = "🎉 Accesso Google effettuato: ${account?.email}"
+                statusMessage = "🎉 Accesso Google effettuato con successo: ${account?.email}"
+            } catch (e: ApiException) {
+                val errorReason = when (e.statusCode) {
+                    12500 -> "12500 (Configurazione OAuth Google Cloud Console richiesta per la firma dell'APK)"
+                    10 -> "10 (DEVELOPER_ERROR: Registrare l'impronta SHA-1 della chiave APK su Google Cloud Console)"
+                    7 -> "7 (NETWORK_ERROR: Nessuna connessione ad Internet)"
+                    4 -> "4 (SIGN_IN_REQUIRED)"
+                    else -> "Codice errore Google: ${e.statusCode}"
+                }
+                statusMessage = "⚠️ Accesso Google non completato: $errorReason."
             } catch (e: Exception) {
-                statusMessage = "❌ Accesso Google fallito: ${e.localizedMessage ?: e.message}"
+                statusMessage = "⚠️ Errore durante l'accesso Google: ${e.localizedMessage ?: e.message}"
             }
+        } else {
+            statusMessage = "⚠️ Selezione account annullata o non riuscita."
         }
     }
 
-    // Database SQLite Import Launcher
+    // Database SQLite / JSON Import Launcher
     val dbImportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             scope.launch {
                 isPerformingAction = true
-                statusMessage = "Importazione database SQLite in corso..."
+                statusMessage = "Importazione dati in corso..."
                 val success = spesaRepository.importDatabaseFromUri(uri)
                 isPerformingAction = false
                 if (success) {
-                    statusMessage = "🎉 Database SQLite importato con successo nell'App!"
+                    statusMessage = "🎉 Dati importati con successo nell'App! Vai alla scheda Registri per consultarli."
                 } else {
-                    statusMessage = "❌ Errore durante l'importazione del database."
+                    statusMessage = "❌ Impossibile importare i dati dal file selezionato."
                 }
             }
         }
@@ -297,7 +306,7 @@ fun SettingsScreen(
             onClick = { dbImportLauncher.launch("*/*") },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("📥 Importa File Database SQLite (.db)")
+            Text("📥 Importa File Database (.db / .json)")
         }
 
         Spacer(modifier = Modifier.height(16.dp))
