@@ -13,7 +13,7 @@ import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import com.expensepereport.app.data.Spesa
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.SpesaRepository
 import org.apache.poi.ss.usermodel.Cell
 import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.FillPatternType
@@ -22,6 +22,7 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.net.URL
 import java.util.Locale
 
 var lastExcelError: String? = null
@@ -34,15 +35,15 @@ object DocumentGenerator {
     )
 
     private val CATEGORY_COLUMN_MAP = mapOf(
-        "TELEPASS" to 5,              // Column F (0-indexed: 5)
-        "NOLO" to 6,                  // Column G (0-indexed: 6)
-        "PARCHEGGI_CONTANTI" to 7,    // Column H (0-indexed: 7)
-        "PARCHEGGI_CC" to 8,          // Column I (0-indexed: 8)
-        "RISTORANTI_CONTANTI" to 9,  // Column J (0-indexed: 9)
-        "RISTORANTI_CC" to 10,        // Column K (0-indexed: 10)
-        "CARBURANTE_CC" to 11,        // Column L (0-indexed: 11)
-        "CARBURANTE_CARTA" to 12,     // Column M (0-indexed: 12)
-        "ALTRO" to 13                 // Column N (0-indexed: 13)
+        "TELEPASS" to 5,              // Column F
+        "NOLO" to 6,                  // Column G
+        "PARCHEGGI_CONTANTI" to 7,    // Column H
+        "PARCHEGGI_CC" to 8,          // Column I
+        "RISTORANTI_CONTANTI" to 9,  // Column J
+        "RISTORANTI_CC" to 10,        // Column K
+        "CARBURANTE_CC" to 11,        // Column L
+        "CARBURANTE_CARTA" to 12,     // Column M
+        "ALTRO" to 13                 // Column N
     )
 
     private fun getCellText(cell: Cell?): String {
@@ -71,7 +72,7 @@ object DocumentGenerator {
 
     suspend fun generateExcel(
         context: Context,
-        supabaseService: SupabaseService,
+        spesaRepository: SpesaRepository,
         templateFile: File,
         year: Int,
         mode: String, // "singolo", "range", "anno"
@@ -89,9 +90,7 @@ object DocumentGenerator {
             val workbook = XSSFWorkbook(fis)
             fis.close()
 
-            // Day 1 corresponds to Row 6 in Excel (0-indexed row 5)
             val rowOffset = 4
-
             val orangeColorIndex = IndexedColors.GOLD.index
             val yellowColorIndex = IndexedColors.YELLOW.index
 
@@ -99,7 +98,7 @@ object DocumentGenerator {
                 val sheetName = MONTH_NAMES[m - 1]
                 val sheet = workbook.getSheet(sheetName) ?: continue
 
-                val spese = supabaseService.getSpeseForMonth(year, m)
+                val spese = spesaRepository.getSpeseForMonth(year, m)
 
                 for (spesa in spese) {
                     val dateParts = spesa.data.split("-")
@@ -112,7 +111,7 @@ object DocumentGenerator {
                         row = sheet.createRow(targetRowIdx)
                     }
 
-                    // Column C: Destinazione (0-indexed col 2)
+                    // Column C: Destinazione
                     spesa.destinazione?.let { dest ->
                         val cell = row.getCell(2) ?: row.createCell(2)
                         val currVal = getCellText(cell)
@@ -123,7 +122,7 @@ object DocumentGenerator {
                         }
                     }
 
-                    // Column D: Scopo (0-indexed col 3)
+                    // Column D: Scopo
                     spesa.scopo?.let { scopo ->
                         val cell = row.getCell(3) ?: row.createCell(3)
                         val currVal = getCellText(cell)
@@ -134,7 +133,7 @@ object DocumentGenerator {
                         }
                     }
 
-                    // Column O: Note (0-indexed col 14)
+                    // Column O: Note
                     spesa.note?.let { note ->
                         val cell = row.getCell(14) ?: row.createCell(14)
                         val currVal = getCellText(cell)
@@ -220,21 +219,33 @@ object DocumentGenerator {
         }
     }
 
+    private fun downloadBytesFromUrl(urlStr: String): ByteArray? {
+        return try {
+            val url = URL(urlStr)
+            val conn = url.openConnection()
+            conn.connectTimeout = 10000
+            conn.readTimeout = 10000
+            conn.getInputStream().readBytes()
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     suspend fun generatePdfAttachments(
         context: Context,
-        supabaseService: SupabaseService,
+        spesaRepository: SpesaRepository,
         year: Int,
         month: Int
     ): File? {
         return try {
-            val spese = supabaseService.getSpeseForMonth(year, month)
+            val spese = spesaRepository.getSpeseForMonth(year, month)
             val speseWithAttachment = spese.filter { !it.allegatoPath.isNullOrBlank() }
 
             if (speseWithAttachment.isEmpty()) return null
 
             val pdfDocument = PdfDocument()
 
-            // Standard A4 dimensions in points: 595 x 842
             val pageWidth = 595
             val pageHeight = 842
 
@@ -269,12 +280,10 @@ object DocumentGenerator {
                 isDither = true
             }
 
-            // Draw Header Title
             canvas.drawText("Allegati Spese (${speseWithAttachment.size} Voci) - ${MONTH_NAMES[month - 1]} $year", 30f, 40f, titlePaint)
 
             val pendingPdfsToMerge = mutableListOf<Pair<Spesa, ByteArray>>()
 
-            // Grid Layout: 2 columns x 2 rows = 4 items per page
             val colPositions = floatArrayOf(30f, 305f)
             val rowPositions = floatArrayOf(70f, 440f)
 
@@ -298,16 +307,21 @@ object DocumentGenerator {
                 val startX = colPositions[colIdx]
                 val startY = rowPositions[rowIdx]
 
-                // Item Header Info
                 canvas.drawText("ID #${spesa.id ?: "-"} | Data: ${spesa.data}", startX, startY + 12f, boldPaint)
                 canvas.drawText("Importo: € ${String.format(Locale.US, "%.2f", spesa.importo)}", startX, startY + 26f, boldPaint)
                 canvas.drawText("Destinazione: ${spesa.destinazione ?: "-"}", startX, startY + 40f, bodyPaint)
                 canvas.drawText("Cat: ${spesa.categoria} | Pag: ${spesa.metodoPagamento ?: "Standard"}", startX, startY + 54f, bodyPaint)
 
-                val url = spesa.allegatoPath!!
-                val isPdf = url.lowercase().contains(".pdf")
+                val path = spesa.allegatoPath!!
+                val isPdf = path.lowercase().contains(".pdf")
 
-                val attachmentBytes = supabaseService.downloadBytes(url)
+                val attachmentBytes: ByteArray? = if (path.startsWith("http://") || path.startsWith("https://")) {
+                    downloadBytesFromUrl(path)
+                } else if (File(path).exists()) {
+                    File(path).readBytes()
+                } else {
+                    null
+                }
 
                 if (attachmentBytes != null) {
                     if (isPdf) {
@@ -319,12 +333,10 @@ object DocumentGenerator {
                                 inScaled = false
                                 inPreferredConfig = Bitmap.Config.ARGB_8888
                             }
-                            // Decode original image without downsampling to retain 100% pixel detail
                             val originalBitmap = BitmapFactory.decodeByteArray(attachmentBytes, 0, attachmentBytes.size, options)
                             if (originalBitmap != null) {
                                 val grayBitmap = convertToGrayscale(originalBitmap)
 
-                                // Calculate destination bounds in points preserving aspect ratio
                                 val srcWidth = grayBitmap.width.toFloat()
                                 val srcHeight = grayBitmap.height.toFloat()
                                 val ratio = Math.min(maxCellWidth / srcWidth, maxCellHeight / srcHeight)
@@ -336,7 +348,6 @@ object DocumentGenerator {
                                 val srcRect = Rect(0, 0, grayBitmap.width, grayBitmap.height)
                                 val dstRect = RectF(startX, imageTop, startX + destWidth, imageTop + destHeight)
 
-                                // Draw full resolution bitmap directly using destination bounds
                                 canvas.drawBitmap(grayBitmap, srcRect, dstRect, highQualityBitmapPaint)
 
                                 grayBitmap.recycle()
@@ -349,13 +360,12 @@ object DocumentGenerator {
                         }
                     }
                 } else {
-                    canvas.drawText("[Impossibile scaricare allegato]", startX, startY + 80f, bodyPaint)
+                    canvas.drawText("[Immagine su Google Drive]", startX, startY + 80f, bodyPaint)
                 }
             }
 
             pdfDocument.finishPage(page)
 
-            // Render and append PDF attachment pages at 4x high resolution (~300 DPI)
             for ((spesa, pdfBytes) in pendingPdfsToMerge) {
                 try {
                     val tempPdfFile = File(context.cacheDir, "temp_attachment_${spesa.id}.pdf")
@@ -374,7 +384,6 @@ object DocumentGenerator {
 
                         canvas.drawText("Allegato PDF in Coda - ID #${spesa.id ?: "-"} (Pagina ${i + 1}/${pdfRenderer.pageCount})", 30f, 30f, boldPaint)
 
-                        // Render PDF page at 4x scale (~300 DPI) for original print quality
                         val scaleFactor = 4f
                         val highResWidth = (pdfPage.width * scaleFactor).toInt()
                         val highResHeight = (pdfPage.height * scaleFactor).toInt()
