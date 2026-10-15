@@ -18,8 +18,9 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
+import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.SpesaInsert
-import com.expensepereport.app.data.SupabaseService
+import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
 import kotlinx.coroutines.Dispatchers
@@ -31,7 +32,10 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun NewExpenseScreen(supabaseService: SupabaseService) {
+fun NewExpenseScreen(
+    spesaRepository: SpesaRepository,
+    googleDriveService: GoogleDriveService
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -68,7 +72,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         showCropDialog = true
     }
 
-    // Launcher for selecting photo from Album / Gallery / Drive
     val galleryPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -90,7 +93,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         }
     }
 
-    // Launcher for taking photo with Camera
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success: Boolean ->
@@ -124,7 +126,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         }
     }
 
-    // Launcher for selecting PDF
     val pdfPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -384,57 +385,64 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                         else -> "Carta Carburante"
                     }
 
-                    val success = withContext(Dispatchers.IO) {
-                        var attachmentUrl: String? = null
-                        val currentUri = imageUri ?: pdfUri
-                        if (currentUri != null) {
-                            try {
-                                val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
-                                val fileBytes = inputStream?.readBytes()
-                                if (fileBytes != null) {
-                                    val ext = if (pdfUri != null) "pdf" else "jpg"
-                                    val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
+                    var attachmentUrl: String? = null
+                    val currentUri = imageUri ?: pdfUri
 
-                                    attachmentUrl = supabaseService.uploadAttachment(
+                    if (currentUri != null) {
+                        val account = GoogleDriveService.getLastSignedInAccount(context)
+                        try {
+                            val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
+                            val fileBytes = inputStream?.readBytes()
+                            if (fileBytes != null) {
+                                val ext = if (pdfUri != null) "pdf" else "jpg"
+                                val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
+
+                                if (account != null) {
+                                    attachmentUrl = googleDriveService.uploadAttachment(
+                                        account = account,
                                         fileBytes = fileBytes,
                                         dataSpesa = dateInput,
                                         extension = ext,
                                         contentType = mime
                                     )
+                                } else {
+                                    // Local save as fallback
+                                    val year = if (dateInput.length >= 4) dateInput.substring(0, 4) else "2026"
+                                    val month = if (dateInput.length >= 7) dateInput.substring(5, 7) else "01"
+                                    val localFolder = File(context.filesDir, "NoteSpese_Allegati/$year/$month")
+                                    localFolder.mkdirs()
+                                    val file = File(localFolder, "rec_${dateInput}_${System.currentTimeMillis()}.$ext")
+                                    file.writeBytes(fileBytes)
+                                    attachmentUrl = file.absolutePath
                                 }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
                             }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
-
-                        val spesaInsert = SpesaInsert(
-                            data = dateInput,
-                            destinazione = destInput.ifBlank { null },
-                            scopo = scopoInput.ifBlank { null },
-                            categoria = catKey,
-                            metodoPagamento = metodoStr,
-                            importo = doubleAmount,
-                            note = noteInput.ifBlank { null },
-                            allegatoPath = attachmentUrl,
-                            valutaStraniera = if (isForeignCurrency) 1 else 0
-                        )
-
-                        supabaseService.insertSpesa(spesaInsert)
                     }
+
+                    val spesaInsert = SpesaInsert(
+                        data = dateInput,
+                        destinazione = destInput.ifBlank { null },
+                        scopo = scopoInput.ifBlank { null },
+                        categoria = catKey,
+                        metodoPagamento = metodoStr,
+                        importo = doubleAmount,
+                        note = noteInput.ifBlank { null },
+                        allegatoPath = attachmentUrl,
+                        valutaStraniera = if (isForeignCurrency) 1 else 0
+                    )
+
+                    spesaRepository.insertSpesa(spesaInsert)
 
                     isSaving = false
-
-                    if (success) {
-                        statusMessage = "🎉 Spesa registrata con successo su Supabase!"
-                        destInput = ""
-                        scopoInput = ""
-                        amountInput = ""
-                        noteInput = ""
-                        imageUri = null
-                        pdfUri = null
-                    } else {
-                        statusMessage = "❌ Errore durante il salvataggio su Supabase."
-                    }
+                    statusMessage = "🎉 Spesa registrata con successo nel database!"
+                    destInput = ""
+                    scopoInput = ""
+                    amountInput = ""
+                    noteInput = ""
+                    imageUri = null
+                    pdfUri = null
                 }
             },
             modifier = Modifier.fillMaxWidth(),
@@ -449,7 +457,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         }
     }
 
-    // Dialog for Photo Option: Camera Scatto vs. Album / Gallery / Drive
     if (showPhotoOptionsDialog) {
         AlertDialog(
             onDismissRequest = { showPhotoOptionsDialog = false },
@@ -483,7 +490,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
         )
     }
 
-    // Dialog for Cropping Image
     if (showCropDialog && cropSourceUri != null) {
         CropImageDialog(
             sourceUri = cropSourceUri!!,
@@ -493,7 +499,6 @@ fun NewExpenseScreen(supabaseService: SupabaseService) {
                 showCropDialog = false
             },
             onDismiss = {
-                // If crop dismissed, use source image
                 if (imageUri == null) {
                     imageUri = cropSourceUri
                     pdfUri = null
