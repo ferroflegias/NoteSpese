@@ -251,4 +251,60 @@ class GoogleDriveService(private val context: Context) {
             null
         }
     }
+
+    suspend fun deleteFile(accountName: String, fileIdOrUrl: String): Boolean = withContext(Dispatchers.IO) {
+        if (fileIdOrUrl.isBlank()) return@withContext false
+
+        // Check if it's a local file path
+        if (fileIdOrUrl.startsWith("/") || fileIdOrUrl.startsWith("file://")) {
+            try {
+                val localPath = if (fileIdOrUrl.startsWith("file://")) fileIdOrUrl.removePrefix("file://") else fileIdOrUrl
+                val file = java.io.File(localPath)
+                if (file.exists()) {
+                    return@withContext file.delete()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            return@withContext false
+        }
+
+        // Extract Google Drive File ID
+        val fileId = extractGoogleDriveFileId(fileIdOrUrl) ?: return@withContext false
+
+        try {
+            val drive = getDriveServiceForAccountName(accountName)
+            drive.files().delete(fileId).execute()
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun extractGoogleDriveFileId(pathOrUrl: String): String? {
+        if (pathOrUrl.isBlank()) return null
+        if (!pathOrUrl.contains("/") && !pathOrUrl.contains("?")) {
+            return pathOrUrl
+        }
+        // Pattern for /file/d/{FILE_ID}
+        val patternFileD = Regex("/file/d/([a-zA-Z0-9_-]+)")
+        val matchFileD = patternFileD.find(pathOrUrl)
+        if (matchFileD != null) {
+            return matchFileD.groupValues[1]
+        }
+        // Pattern for ?id={FILE_ID} or &id={FILE_ID}
+        val patternId = Regex("[?&]id=([a-zA-Z0-9_-]+)")
+        val matchId = patternId.find(pathOrUrl)
+        if (matchId != null) {
+            return matchId.groupValues[1]
+        }
+        // Pattern for /d/{FILE_ID}
+        val patternD = Regex("/d/([a-zA-Z0-9_-]+)")
+        val matchD = patternD.find(pathOrUrl)
+        if (matchD != null) {
+            return matchD.groupValues[1]
+        }
+        return null
+    }
 }
