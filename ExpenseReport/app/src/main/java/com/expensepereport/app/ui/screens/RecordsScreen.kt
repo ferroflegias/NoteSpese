@@ -281,6 +281,10 @@ fun RecordsScreen(
                                                     extension = ext,
                                                     contentType = mime
                                                 )
+                                                // Delete old attachment if present
+                                                if (!spesa.allegatoPath.isNullOrBlank()) {
+                                                    googleDriveService.deleteFile(accountEmail, spesa.allegatoPath)
+                                                }
                                             }
                                         }
                                     } catch (e: Exception) {
@@ -316,6 +320,18 @@ fun RecordsScreen(
                     onClick = {
                         scope.launch {
                             spesa.id?.let { id ->
+                                val oldAttachment = spesa.allegatoPath
+                                if (!oldAttachment.isNullOrBlank()) {
+                                    val savedEmail = settingsRepository.googleAccountEmailFlow.first()
+                                    val accountEmail = if (savedEmail.isNotBlank()) {
+                                        savedEmail
+                                    } else {
+                                        GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
+                                    }
+                                    if (accountEmail.isNotBlank()) {
+                                        googleDriveService.deleteFile(accountEmail, oldAttachment)
+                                    }
+                                }
                                 spesaRepository.deleteSpesa(id)
                                 selectedSpesa = null
                                 refreshList()
