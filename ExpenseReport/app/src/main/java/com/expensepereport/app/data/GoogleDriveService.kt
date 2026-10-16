@@ -36,6 +36,13 @@ class GoogleDriveService(private val context: Context) {
         fun getLastSignedInAccount(context: Context): GoogleSignInAccount? {
             return GoogleSignIn.getLastSignedInAccount(context)
         }
+
+        fun signOut(context: Context, onComplete: () -> Unit = {}) {
+            val client = GoogleSignIn.getClient(context, getGoogleSignInOptions())
+            client.signOut().addOnCompleteListener {
+                onComplete()
+            }
+        }
     }
 
     fun getDriveServiceForAccountName(accountName: String): Drive {
