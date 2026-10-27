@@ -69,143 +69,105 @@ class SpesaRepository(private val context: Context) {
         true
     }
 
-    suspend fun deleteSpesa(id: Long): Boolean = withContext(Dispatchers.IO) {
+    suspend fun deleteSpesa(id: Long) = withContext(Dispatchers.IO) {
         spesaDao.deleteById(id)
-        true
-    }
-
-    suspend fun deleteAllSpese() = withContext(Dispatchers.IO) {
-        spesaDao.deleteAll()
     }
 
     fun getDatabaseFile(): File {
         return context.getDatabasePath("expense_report.db")
     }
 
-    suspend fun importFromSqliteFile(inputFile: File): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val externalDb = SQLiteDatabase.openDatabase(
-                inputFile.absolutePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY
-            )
-
-            val cursor = externalDb.rawQuery("SELECT * FROM spese", null)
-            val importedEntities = mutableListOf<SpesaEntity>()
-
-            if (cursor.moveToFirst()) {
-                val idIdx = cursor.getColumnIndex("id")
-                val dataIdx = cursor.getColumnIndex("data")
-                val destIdx = cursor.getColumnIndex("destinazione")
-                val scopoIdx = cursor.getColumnIndex("scopo")
-                val catIdx = cursor.getColumnIndex("categoria")
-                val metIdx = cursor.getColumnIndex("metodo_pagamento")
-                val impIdx = cursor.getColumnIndex("importo")
-                val kmIdx = cursor.getColumnIndex("km")
-                val noteIdx = cursor.getColumnIndex("note")
-                val allIdx = cursor.getColumnIndex("allegato_path")
-                val valIdx = cursor.getColumnIndex("valuta_straniera")
-                val creIdx = cursor.getColumnIndex("created_at")
-
-                do {
-                    val id = if (idIdx != -1 && !cursor.isNull(idIdx)) cursor.getLong(idIdx) else 0L
-                    val data = if (dataIdx != -1 && !cursor.isNull(dataIdx)) cursor.getString(dataIdx) else ""
-                    val dest = if (destIdx != -1 && !cursor.isNull(destIdx)) cursor.getString(destIdx) else null
-                    val scopo = if (scopoIdx != -1 && !cursor.isNull(scopoIdx)) cursor.getString(scopoIdx) else null
-                    val cat = if (catIdx != -1 && !cursor.isNull(catIdx)) cursor.getString(catIdx) else "ALTRO"
-                    val met = if (metIdx != -1 && !cursor.isNull(metIdx)) cursor.getString(metIdx) else null
-                    val imp = if (impIdx != -1 && !cursor.isNull(impIdx)) cursor.getDouble(impIdx) else 0.0
-                    val km = if (kmIdx != -1 && !cursor.isNull(kmIdx)) cursor.getDouble(kmIdx) else 0.0
-                    val note = if (noteIdx != -1 && !cursor.isNull(noteIdx)) cursor.getString(noteIdx) else null
-                    val allegato = if (allIdx != -1 && !cursor.isNull(allIdx)) cursor.getString(allIdx) else null
-                    val valuta = if (valIdx != -1 && !cursor.isNull(valIdx)) cursor.getInt(valIdx) else 0
-                    val created = if (creIdx != -1 && !cursor.isNull(creIdx)) cursor.getString(creIdx) else null
-
-                    if (data.isNotBlank()) {
-                        importedEntities.add(
-                            SpesaEntity(
-                                id = id,
-                                data = data,
-                                destinazione = dest,
-                                scopo = scopo,
-                                categoria = cat,
-                                metodoPagamento = met,
-                                importo = imp,
-                                km = km,
-                                note = note,
-                                allegatoPath = allegato,
-                                valutaStraniera = valuta,
-                                createdAt = created
-                            )
-                        )
-                    }
-                } while (cursor.moveToNext())
-            }
-
-            cursor.close()
-            externalDb.close()
-
-            if (importedEntities.isNotEmpty()) {
-                spesaDao.deleteAll()
-                spesaDao.insertAll(importedEntities)
-                true
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
-        }
+    /**
+     * Room uses WAL journaling: the latest writes may still live in the -wal file.
+     * Checkpoint first so that the main .db file is a complete, consistent copy.
+     */
+    suspend fun getDatabaseFileForBackup(): File = withContext(Dispatchers.IO) {
+        db.openHelper.writableDatabase.query("PRAGMA wal_checkpoint(FULL)").use { it.moveToFirst() }
+        getDatabaseFile()
     }
 
-    suspend fun importFromJsonFile(inputFile: File): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val jsonText = inputFile.readText(Charsets.UTF_8)
-            val jsonArray = JSONArray(jsonText)
-            val importedEntities = mutableListOf<SpesaEntity>()
+    private fun isSqliteFile(file: File): Boolean {
+        val header = ByteArray(SQLITE_HEADER.size)
+        val read = file.inputStream().use { it.read(header) }
+        return read == header.size && header.contentEquals(SQLITE_HEADER)
+    }
 
-            for (i in 0 until jsonArray.length()) {
-                val obj = jsonArray.getJSONObject(i)
-                val id = obj.optLong("id", 0L)
-                val data = obj.optString("data", "")
-                val dest = if (obj.has("destinazione") && !obj.isNull("destinazione")) obj.getString("destinazione") else null
-                val scopo = if (obj.has("scopo") && !obj.isNull("scopo")) obj.getString("scopo") else null
-                val cat = obj.optString("categoria", "ALTRO")
-                val met = if (obj.has("metodo_pagamento") && !obj.isNull("metodo_pagamento")) obj.getString("metodo_pagamento") else null
-                val imp = obj.optDouble("importo", 0.0)
-                val km = obj.optDouble("km", 0.0)
-                val note = if (obj.has("note") && !obj.isNull("note")) obj.getString("note") else null
-                val allegato = if (obj.has("allegato_path") && !obj.isNull("allegato_path")) obj.getString("allegato_path") else null
-                val valuta = obj.optInt("valuta_straniera", 0)
-                val created = if (obj.has("created_at") && !obj.isNull("created_at")) obj.getString("created_at") else null
+    private fun readEntitiesFromSqlite(inputFile: File): List<SpesaEntity> {
+        val entities = mutableListOf<SpesaEntity>()
+        SQLiteDatabase.openDatabase(inputFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { externalDb ->
+            externalDb.rawQuery("SELECT * FROM spese", null).use { cursor ->
+                fun col(name: String): Int? = cursor.getColumnIndex(name).takeIf { it != -1 && !cursor.isNull(it) }
 
-                if (data.isNotBlank()) {
-                    importedEntities.add(
+                while (cursor.moveToNext()) {
+                    val data = col("data")?.let { cursor.getString(it) } ?: ""
+                    if (data.isBlank()) continue
+                    entities.add(
                         SpesaEntity(
-                            id = id,
+                            id = col("id")?.let { cursor.getLong(it) } ?: 0L,
                             data = data,
-                            destinazione = dest,
-                            scopo = scopo,
-                            categoria = cat,
-                            metodoPagamento = met,
-                            importo = imp,
-                            km = km,
-                            note = note,
-                            allegatoPath = allegato,
-                            valutaStraniera = valuta,
-                            createdAt = created
+                            destinazione = col("destinazione")?.let { cursor.getString(it) },
+                            scopo = col("scopo")?.let { cursor.getString(it) },
+                            categoria = col("categoria")?.let { cursor.getString(it) } ?: "ALTRO",
+                            metodoPagamento = col("metodo_pagamento")?.let { cursor.getString(it) },
+                            importo = col("importo")?.let { cursor.getDouble(it) } ?: 0.0,
+                            km = col("km")?.let { cursor.getDouble(it) } ?: 0.0,
+                            note = col("note")?.let { cursor.getString(it) },
+                            allegatoPath = col("allegato_path")?.let { cursor.getString(it) },
+                            valutaStraniera = col("valuta_straniera")?.let { cursor.getInt(it) } ?: 0,
+                            createdAt = col("created_at")?.let { cursor.getString(it) }
                         )
                     )
                 }
             }
+        }
+        return entities
+    }
 
-            if (importedEntities.isNotEmpty()) {
-                spesaDao.deleteAll()
-                spesaDao.insertAll(importedEntities)
-                true
+    private fun readEntitiesFromJson(inputFile: File): List<SpesaEntity> {
+        val jsonArray = JSONArray(inputFile.readText(Charsets.UTF_8))
+        val entities = mutableListOf<SpesaEntity>()
+
+        for (i in 0 until jsonArray.length()) {
+            val obj = jsonArray.getJSONObject(i)
+            fun optStringOrNull(name: String): String? = if (obj.isNull(name)) null else obj.getString(name)
+
+            val data = obj.optString("data", "")
+            if (data.isBlank()) continue
+            entities.add(
+                SpesaEntity(
+                    id = obj.optLong("id", 0L),
+                    data = data,
+                    destinazione = optStringOrNull("destinazione"),
+                    scopo = optStringOrNull("scopo"),
+                    categoria = obj.optString("categoria", "ALTRO"),
+                    metodoPagamento = optStringOrNull("metodo_pagamento"),
+                    importo = obj.optDouble("importo", 0.0),
+                    km = obj.optDouble("km", 0.0),
+                    note = optStringOrNull("note"),
+                    allegatoPath = optStringOrNull("allegato_path"),
+                    valutaStraniera = obj.optInt("valuta_straniera", 0),
+                    createdAt = optStringOrNull("created_at")
+                )
+            )
+        }
+        return entities
+    }
+
+    /**
+     * Replaces all expenses with the content of [inputFile] (SQLite database or JSON array).
+     * The format is detected from the file header: opening a non-SQLite file with
+     * SQLiteDatabase would trigger the corruption handler, which deletes the file.
+     */
+    suspend fun importFromFile(inputFile: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val entities = if (isSqliteFile(inputFile)) {
+                readEntitiesFromSqlite(inputFile)
             } else {
-                false
+                readEntitiesFromJson(inputFile)
             }
+            if (entities.isEmpty()) return@withContext false
+            spesaDao.replaceAll(entities)
+            true
         } catch (e: Exception) {
             e.printStackTrace()
             false
@@ -213,37 +175,24 @@ class SpesaRepository(private val context: Context) {
     }
 
     suspend fun importDatabaseFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        val tempFile = File(context.cacheDir, "temp_import.file")
         try {
-            val tempFile = File(context.cacheDir, "temp_import.file")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(tempFile).use { output ->
-                    input.copyTo(output)
-                }
+            val copied = context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(tempFile).use { output -> input.copyTo(output) }
             }
-
-            if (!tempFile.exists() || tempFile.length() == 0L) {
+            if (copied == null || tempFile.length() == 0L) {
                 return@withContext false
             }
-
-            // Try importing as SQLite database first, then fallback to JSON if needed
-            var success = importFromSqliteFile(tempFile)
-            if (!success) {
-                success = importFromJsonFile(tempFile)
-            }
-
-            tempFile.delete()
-            success
+            importFromFile(tempFile)
         } catch (e: Exception) {
             e.printStackTrace()
             false
+        } finally {
+            tempFile.delete()
         }
     }
 
-    suspend fun restoreDatabaseFromFile(inputFile: File): Boolean = withContext(Dispatchers.IO) {
-        var success = importFromSqliteFile(inputFile)
-        if (!success) {
-            success = importFromJsonFile(inputFile)
-        }
-        success
+    companion object {
+        private val SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
     }
 }

@@ -16,11 +16,13 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.expensepereport.app.data.AppSettingsRepository
+import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.GoogleDriveService
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.screens.ExportScreen
@@ -28,6 +30,7 @@ import com.expensepereport.app.ui.screens.NewExpenseScreen
 import com.expensepereport.app.ui.screens.RecordsScreen
 import com.expensepereport.app.ui.screens.ReportsScreen
 import com.expensepereport.app.ui.screens.SettingsScreen
+import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String, val title: String, val icon: ImageVector) {
     object NewExpense : Screen("new_expense", "Spesa", Icons.Filled.Add)
@@ -62,6 +65,11 @@ class MainActivity : ComponentActivity() {
         val settingsRepository = AppSettingsRepository(applicationContext)
         val spesaRepository = SpesaRepository(applicationContext)
         val googleDriveService = GoogleDriveService(applicationContext)
+        val attachmentRepository = AttachmentRepository(applicationContext, settingsRepository, googleDriveService)
+
+        lifecycleScope.launch {
+            settingsRepository.ensureDailyBackupScheduled()
+        }
 
         setContent {
             AppTheme {
@@ -114,15 +122,13 @@ class MainActivity : ComponentActivity() {
                             composable(Screen.NewExpense.route) {
                                 NewExpenseScreen(
                                     spesaRepository = spesaRepository,
-                                    settingsRepository = settingsRepository,
-                                    googleDriveService = googleDriveService
+                                    attachmentRepository = attachmentRepository
                                 )
                             }
                             composable(Screen.Records.route) {
                                 RecordsScreen(
                                     spesaRepository = spesaRepository,
-                                    settingsRepository = settingsRepository,
-                                    googleDriveService = googleDriveService
+                                    attachmentRepository = attachmentRepository
                                 )
                             }
                             composable(Screen.Reports.route) {
@@ -131,7 +137,8 @@ class MainActivity : ComponentActivity() {
                             composable(Screen.Export.route) {
                                 ExportScreen(
                                     spesaRepository = spesaRepository,
-                                    settingsRepository = settingsRepository
+                                    settingsRepository = settingsRepository,
+                                    attachmentRepository = attachmentRepository
                                 )
                             }
                             composable(Screen.Settings.route) {

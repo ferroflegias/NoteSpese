@@ -41,23 +41,4 @@ data class SpesaEntity(
             createdAt = createdAt
         )
     }
-
-    companion object {
-        fun fromSpesa(spesa: Spesa): SpesaEntity {
-            return SpesaEntity(
-                id = spesa.id ?: 0,
-                data = spesa.data,
-                destinazione = spesa.destinazione,
-                scopo = spesa.scopo,
-                categoria = spesa.categoria,
-                metodoPagamento = spesa.metodoPagamento,
-                importo = spesa.importo,
-                km = spesa.km,
-                note = spesa.note,
-                allegatoPath = spesa.allegatoPath,
-                valutaStraniera = spesa.valutaStraniera,
-                createdAt = spesa.createdAt
-            )
-        }
-    }
 }

@@ -126,10 +126,7 @@ dependencies {
     // Apache POI for Excel (.xlsx) manipulation
     implementation("org.apache.poi:poi-ooxml:5.2.5")
 
-    // Ktor Client & Kotlinx Serialization
-    implementation("io.ktor:ktor-client-android:2.3.8")
-    implementation("io.ktor:ktor-client-content-negotiation:2.3.8")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.8")
+    // Kotlinx Serialization
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
 
     // Testing

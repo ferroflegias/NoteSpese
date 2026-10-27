@@ -2,20 +2,14 @@ package com.expensepereport.app.util
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
-import android.media.ExifInterface
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
-import java.io.InputStream
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Locale
 import java.util.regex.Pattern
 import kotlin.coroutines.resume
 
@@ -34,20 +28,20 @@ object OcrAnalyzer {
         val bitmap = if (isPdf) {
             renderPdfFirstPageToBitmap(context, uri)
         } else {
-            loadBitmapFromUri(context, uri) ?: renderPdfFirstPageToBitmap(context, uri)
+            ImageUtils.loadOrientedBitmap(context, uri) ?: renderPdfFirstPageToBitmap(context, uri)
         } ?: return null
 
         val inputImage = InputImage.fromBitmap(bitmap, 0)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-        val visionText: Text? = suspendCancellableCoroutine { continuation ->
-            recognizer.process(inputImage)
-                .addOnSuccessListener { result ->
-                    continuation.resume(result)
-                }
-                .addOnFailureListener {
-                    continuation.resume(null)
-                }
+        val visionText: Text? = try {
+            suspendCancellableCoroutine { continuation ->
+                recognizer.process(inputImage)
+                    .addOnSuccessListener { result -> continuation.resume(result) }
+                    .addOnFailureListener { continuation.resume(null) }
+            }
+        } finally {
+            recognizer.close()
         }
 
         if (visionText == null) return null
@@ -55,23 +49,21 @@ object OcrAnalyzer {
         val fullText = visionText.text
         if (fullText.isBlank()) return null
 
-        // 1. Date extraction (DD/MM/YYYY, DD-MM-YYYY, etc.)
-        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())
-        var extractedDateStr = todayStr
+        // 1. Date extraction (DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY)
+        var extractedDateStr = todayIsoDate()
 
-        val datePattern = Pattern.compile("\\b(\\d{1,2})[/-](\\d{1,2})[/-](\\d{2,4})\\b")
+        val datePattern = Pattern.compile("\\b(\\d{1,2})[/.-](\\d{1,2})[/.-](\\d{2,4})\\b")
         val dateMatcher = datePattern.matcher(fullText)
-        if (dateMatcher.find()) {
-            val d = dateMatcher.group(1)?.toIntOrNull() ?: 1
-            val m = dateMatcher.group(2)?.toIntOrNull() ?: 1
-            var y = dateMatcher.group(3)?.toIntOrNull() ?: 2026
+        while (dateMatcher.find()) {
+            val d = dateMatcher.group(1)?.toIntOrNull() ?: continue
+            val m = dateMatcher.group(2)?.toIntOrNull() ?: continue
+            var y = dateMatcher.group(3)?.toIntOrNull() ?: continue
             if (y < 100) y += 2000
-            try {
-                val calendar = Calendar.getInstance()
-                calendar.set(y, m - 1, d)
-                extractedDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(calendar.time)
-            } catch (e: Exception) {
-                // Keep today's date if parse fails
+            // Strict validation: reject impossible dates (e.g. 31/02) instead of letting them roll over
+            val candidate = String.format(Locale.US, "%04d-%02d-%02d", y, m, d)
+            if (isValidIsoDate(candidate)) {
+                extractedDateStr = candidate
+                break
             }
         }
 
@@ -110,7 +102,8 @@ object OcrAnalyzer {
         val validLines = lines.map { it.trim() }.filter { it.length > 3 }
         for (vl in validLines.take(4)) {
             val lower = vl.lowercase(Locale.ITALIAN)
-            if (!lower.contains("ricevuta") && !lower.contains("scontrino") && !lower.contains("fattura") && !lower.contains("via ") && !lower.contains("tel")) {
+            // "tel" must be a whole word, otherwise names like "Hotel ..." are discarded
+            if (!lower.contains("ricevuta") && !lower.contains("scontrino") && !lower.contains("fattura") && !lower.contains("via ") && !TEL_REGEX.containsMatchIn(lower)) {
                 extractedDestinazione = vl.take(40)
                 break
             }
@@ -150,61 +143,19 @@ object OcrAnalyzer {
         )
     }
 
-    private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap? {
-        return try {
-            val inputStream: InputStream = context.contentResolver.openInputStream(uri) ?: return null
-            val bitmap = BitmapFactory.decodeStream(inputStream)
-            inputStream.close()
-
-            if (bitmap == null) return null
-
-            val exifStream = context.contentResolver.openInputStream(uri)
-            val exif = exifStream?.let { ExifInterface(it) }
-            val orientation = exif?.getAttributeInt(
-                ExifInterface.TAG_ORIENTATION,
-                ExifInterface.ORIENTATION_UNDEFINED
-            ) ?: ExifInterface.ORIENTATION_UNDEFINED
-            exifStream?.close()
-
-            val matrix = Matrix()
-            when (orientation) {
-                ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-                ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-                ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-                else -> return bitmap
-            }
-
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
+    private val TEL_REGEX = Regex("\\btel\\b")
 
     private fun renderPdfFirstPageToBitmap(context: Context, pdfUri: Uri): Bitmap? {
         return try {
-            val pfd: ParcelFileDescriptor? = context.contentResolver.openFileDescriptor(pdfUri, "r")
-            if (pfd != null) {
-                val pdfRenderer = PdfRenderer(pfd)
-                if (pdfRenderer.pageCount > 0) {
-                    val page = pdfRenderer.openPage(0)
-                    val bitmap = Bitmap.createBitmap(
-                        page.width * 2,
-                        page.height * 2,
-                        Bitmap.Config.ARGB_8888
-                    )
-                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                    page.close()
-                    pdfRenderer.close()
-                    pfd.close()
-                    bitmap
-                } else {
-                    pdfRenderer.close()
-                    pfd.close()
-                    null
+            context.contentResolver.openFileDescriptor(pdfUri, "r")?.use { pfd ->
+                PdfRenderer(pfd).use { pdfRenderer ->
+                    if (pdfRenderer.pageCount == 0) return null
+                    pdfRenderer.openPage(0).use { page ->
+                        val bitmap = Bitmap.createBitmap(page.width * 2, page.height * 2, Bitmap.Config.ARGB_8888)
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        bitmap
+                    }
                 }
-            } else {
-                null
             }
         } catch (e: Exception) {
             e.printStackTrace()

@@ -1,10 +1,6 @@
 package com.expensepereport.app.ui
 
-import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
-import android.media.ExifInterface
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -27,9 +23,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.expensepereport.app.util.ImageUtils
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 import kotlin.math.max
 import kotlin.math.min
 
@@ -43,7 +41,8 @@ fun CropImageDialog(
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(sourceUri) {
-        bitmap = loadOrientedBitmap(context, sourceUri)
+        // Decoding a full-resolution photo is too slow for the main thread
+        bitmap = withContext(Dispatchers.IO) { ImageUtils.loadOrientedBitmap(context, sourceUri) }
     }
 
     val loadedBitmap = bitmap
@@ -264,14 +263,10 @@ fun CropImageDialog(
 
                                 val croppedBitmap = Bitmap.createBitmap(loadedBitmap, x, y, w, h)
 
-                                val outputFile = File.createTempFile("cropped_rec_", ".jpg", context.cacheDir).apply {
-                                    createNewFile()
-                                    deleteOnExit()
+                                val outputFile = File.createTempFile("cropped_rec_", ".jpg", context.cacheDir)
+                                FileOutputStream(outputFile).use { fos ->
+                                    croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, fos)
                                 }
-                                val fos = FileOutputStream(outputFile)
-                                croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, fos)
-                                fos.flush()
-                                fos.close()
 
                                 val croppedUri = Uri.fromFile(outputFile)
                                 onCropSuccess(croppedUri)
@@ -287,37 +282,6 @@ fun CropImageDialog(
                 }
             }
         }
-    }
-}
-
-private fun loadOrientedBitmap(context: Context, uri: Uri): Bitmap? {
-    return try {
-        val inputStream: InputStream = context.contentResolver.openInputStream(uri) ?: return null
-        val bitmap = BitmapFactory.decodeStream(inputStream)
-        inputStream.close()
-
-        if (bitmap == null) return null
-
-        val exifStream = context.contentResolver.openInputStream(uri)
-        val exif = exifStream?.let { ExifInterface(it) }
-        val orientation = exif?.getAttributeInt(
-            ExifInterface.TAG_ORIENTATION,
-            ExifInterface.ORIENTATION_UNDEFINED
-        ) ?: ExifInterface.ORIENTATION_UNDEFINED
-        exifStream?.close()
-
-        val matrix = Matrix()
-        when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
-            ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
-            ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
-            else -> return bitmap
-        }
-
-        Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-    } catch (e: Exception) {
-        e.printStackTrace()
-        null
     }
 }
 
