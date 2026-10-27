@@ -87,6 +87,32 @@ Il progetto Android si trova nella cartella [`ExpenseReport/`](ExpenseReport/).
 * **JDK 17**
 * **Android SDK** con platform API 34 (consigliato: Android Studio recente)
 
+### Firma dell'APK (keystore)
+
+Il keystore e le relative password **non sono inclusi nel repository**. Per firmare l'APK:
+
+1. Genera un keystore (una volta sola) e conservalo in un posto sicuro, fuori da git:
+   ```bash
+   keytool -genkeypair -v -keystore expense-release.keystore -alias releaseKey \
+     -keyalg RSA -keysize 2048 -validity 10000
+   ```
+2. Crea (o integra) il file `ExpenseReport/local.properties`, già escluso da git:
+   ```properties
+   RELEASE_STORE_FILE=/percorso/assoluto/expense-release.keystore
+   RELEASE_STORE_PASSWORD=la_password_del_keystore
+   RELEASE_KEY_ALIAS=releaseKey
+   RELEASE_KEY_PASSWORD=la_password_della_chiave
+   ```
+   In alternativa puoi impostare le stesse chiavi come variabili d'ambiente (utile in CI).
+3. Ricava l'impronta SHA-1 da registrare su Google Cloud Console:
+   ```bash
+   keytool -list -v -keystore /percorso/assoluto/expense-release.keystore -alias releaseKey
+   ```
+
+Se la configurazione è presente, sia la build di debug sia quella di release vengono firmate con questo keystore, così l'impronta SHA-1 resta la stessa per l'accesso Google. Senza configurazione la build di debug usa la chiave di debug standard di Android (con SHA-1 diversa, quindi l'accesso Google non funzionerà) e quella di release viene prodotta non firmata.
+
+> ⚠️ Conserva una copia di backup del keystore: senza lo stesso keystore non è possibile installare aggiornamenti sopra l'app esistente.
+
 ### Build
 
 ```bash
@@ -108,8 +134,6 @@ L'APK generato si trova in:
 ExpenseReport/app/build/outputs/apk/release/PerExpenseReport-release.apk
 ExpenseReport/app/build/outputs/apk/debug/PerExpenseReport-debug.apk
 ```
-
-Entrambe le build sono firmate con il keystore incluso nel progetto (`ExpenseReport/app/release.keystore`), in modo che l'impronta SHA-1 resti la stessa per la configurazione OAuth di Google.
 
 ---
 
