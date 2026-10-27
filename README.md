@@ -53,7 +53,7 @@ NoteSpese_Backups/
 
 ## 📲 Installazione dell'APK
 
-1. Scarica il file `PerExpenseReport-release.apk` (dalla sezione *Releases* del repository oppure compilandolo come descritto sotto).
+1. Ottieni il file `PerExpenseReport-release.apk` compilandolo come descritto in [Compilazione dal codice sorgente](#️-compilazione-dal-codice-sorgente).
 2. Sul telefono Android abilita l'installazione da **origini sconosciute** per l'app con cui apri il file (browser, file manager, Drive…).
 3. Apri l'APK e conferma l'installazione.
 4. Al primo avvio:
