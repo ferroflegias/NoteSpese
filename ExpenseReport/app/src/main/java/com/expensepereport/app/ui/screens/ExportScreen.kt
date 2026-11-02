@@ -98,22 +98,19 @@ fun ExportScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             if (excelMode == "Mese Singolo" || excelMode == "Range Mesi") {
-                Text("Mese Inizio: ${DocumentGenerator.MONTH_NAMES[excelMonthStart - 1]}")
-                Slider(
-                    value = excelMonthStart.toFloat(),
-                    onValueChange = { excelMonthStart = it.toInt() },
-                    valueRange = 1f..12f,
-                    steps = 10
+                MonthSelector(
+                    label = if (excelMode == "Range Mesi") "Mese Inizio" else "Mese",
+                    month = excelMonthStart,
+                    onMonthSelected = { excelMonthStart = it }
                 )
             }
 
             if (excelMode == "Range Mesi") {
-                Text("Mese Fine: ${DocumentGenerator.MONTH_NAMES[excelMonthEnd - 1]}")
-                Slider(
-                    value = excelMonthEnd.toFloat(),
-                    onValueChange = { excelMonthEnd = it.toInt() },
-                    valueRange = 1f..12f,
-                    steps = 10
+                Spacer(modifier = Modifier.height(8.dp))
+                MonthSelector(
+                    label = "Mese Fine",
+                    month = excelMonthEnd,
+                    onMonthSelected = { excelMonthEnd = it }
                 )
             }
 
@@ -175,12 +172,10 @@ fun ExportScreen(
         Text("🖼️📄 Genera & Condividi PDF Allegati (Grayscale)", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(8.dp))
 
-        Text("Mese PDF: ${DocumentGenerator.MONTH_NAMES[pdfMonth - 1]}")
-        Slider(
-            value = pdfMonth.toFloat(),
-            onValueChange = { pdfMonth = it.toInt() },
-            valueRange = 1f..12f,
-            steps = 10
+        MonthSelector(
+            label = "Mese",
+            month = pdfMonth,
+            onMonthSelected = { pdfMonth = it }
         )
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -217,6 +212,37 @@ fun ExportScreen(
         if (statusMessage.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(statusMessage, style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+/**
+ * Month picker as a drop-down list. It replaces a Slider whose float values (e.g. 9.9999995)
+ * were truncated with toInt(), which made October impossible to select.
+ */
+@Composable
+private fun MonthSelector(label: String, month: Int, onMonthSelected: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = Modifier.fillMaxWidth()) {
+        OutlinedButton(
+            onClick = { expanded = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("$label: ${DocumentGenerator.MONTH_NAMES[month - 1]}  ▾")
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DocumentGenerator.MONTH_NAMES.forEachIndexed { index, name ->
+                DropdownMenuItem(
+                    text = { Text(name) },
+                    onClick = {
+                        onMonthSelected(index + 1)
+                        expanded = false
+                    }
+                )
+            }
         }
     }
 }
