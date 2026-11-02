@@ -15,6 +15,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.ImportResult
 import com.expensepereport.app.data.SpesaRepository
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
@@ -89,12 +90,12 @@ fun SettingsScreen(
             scope.launch {
                 isPerformingAction = true
                 statusMessage = "Importazione dati in corso..."
-                val success = spesaRepository.importDatabaseFromUri(uri)
+                val result = spesaRepository.importDatabaseFromUri(uri)
                 isPerformingAction = false
-                if (success) {
-                    statusMessage = "🎉 Dati importati con successo nell'App! Vai alla scheda Registri per consultarli."
+                statusMessage = if (result == ImportResult.SUCCESS) {
+                    "🎉 Dati importati con successo nell'App! Vai alla scheda Registri per consultarli."
                 } else {
-                    statusMessage = "❌ Impossibile importare i dati dal file selezionato."
+                    "❌ Impossibile importare i dati dal file selezionato. ${result.errorMessage()}"
                 }
             }
         }
@@ -398,10 +399,13 @@ fun SettingsScreen(
                                         val downloaded = googleDriveService.downloadBackup(activeEmail, file.id, tempFile)
                                         statusMessage = if (!downloaded) {
                                             "❌ Impossibile scaricare il file dal backup su GDrive."
-                                        } else if (spesaRepository.importFromFile(tempFile)) {
-                                            "🎉 Database ripristinato con successo!"
                                         } else {
-                                            "❌ Errore durante il ripristino del database."
+                                            val result = spesaRepository.importFromFile(tempFile)
+                                            if (result == ImportResult.SUCCESS) {
+                                                "🎉 Database ripristinato con successo!"
+                                            } else {
+                                                "❌ Errore durante il ripristino del database. ${result.errorMessage()}"
+                                            }
                                         }
                                     } finally {
                                         tempFile.delete()
@@ -411,7 +415,8 @@ fun SettingsScreen(
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text(file.name ?: file.id)
+                            val sizeKb = file.getSize()?.let { String.format(Locale.ITALY, " (%.0f KB)", it / 1024.0) } ?: ""
+                            Text((file.name ?: file.id) + sizeKb)
                         }
                     }
                 }
