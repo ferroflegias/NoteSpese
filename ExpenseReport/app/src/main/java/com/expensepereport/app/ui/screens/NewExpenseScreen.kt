@@ -23,6 +23,7 @@ import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
+import com.expensepereport.app.util.OcrException
 import com.expensepereport.app.util.formatAmount
 import com.expensepereport.app.util.isValidIsoDate
 import com.expensepereport.app.util.parseAmount
@@ -118,8 +119,16 @@ fun NewExpenseScreen(
     fun runOcr(uri: Uri, isPdf: Boolean) {
         scope.launch {
             isAnalyzing = true
+            statusMessage = "🔍 Analisi OCR in corso..."
             val ocrRes = try {
                 withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf) }
+            } catch (e: OcrException) {
+                statusMessage = "⚠️ OCR non riuscito: ${e.message}."
+                return@launch
+            } catch (e: Exception) {
+                e.printStackTrace()
+                statusMessage = "⚠️ OCR non riuscito: ${e.localizedMessage ?: e.javaClass.simpleName}."
+                return@launch
             } finally {
                 isAnalyzing = false
             }

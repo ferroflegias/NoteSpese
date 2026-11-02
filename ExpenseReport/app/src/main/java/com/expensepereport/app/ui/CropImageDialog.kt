@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -45,7 +46,9 @@ fun CropImageDialog(
 
     LaunchedEffect(sourceUri) {
         // Decoding a full-resolution photo is too slow for the main thread
-        bitmap = withContext(Dispatchers.IO) { ImageUtils.loadOrientedBitmap(context, sourceUri) }
+        bitmap = withContext(Dispatchers.IO) {
+            ImageUtils.loadOrientedBitmap(context, sourceUri, ImageUtils.PREVIEW_MAX_DIMENSION)
+        }
     }
 
     val loadedBitmap = bitmap
@@ -265,21 +268,27 @@ fun CropImageDialog(
                                 // Cropping and JPEG encoding take too long for the main thread
                                 val croppedUri = withContext(Dispatchers.Default) {
                                     try {
-                                        val origW = loadedBitmap.width
-                                        val origH = loadedBitmap.height
+                                        // The preview is reduced: crop from a higher-resolution decode
+                                        // (same orientation, so the relative coordinates still match)
+                                        val sourceBitmap = ImageUtils.loadOrientedBitmap(
+                                            context, sourceUri, ImageUtils.ATTACHMENT_MAX_DIMENSION, exactSize = true
+                                        ) ?: loadedBitmap
+                                        val origW = sourceBitmap.width
+                                        val origH = sourceBitmap.height
 
                                         val x = (left * origW).toInt().coerceIn(0, origW - 1)
                                         val y = (top * origH).toInt().coerceIn(0, origH - 1)
                                         val w = ((right - left) * origW).toInt().coerceIn(1, origW - x)
                                         val h = ((bottom - top) * origH).toInt().coerceIn(1, origH - y)
 
-                                        val croppedBitmap = Bitmap.createBitmap(loadedBitmap, x, y, w, h)
+                                        val croppedBitmap = Bitmap.createBitmap(sourceBitmap, x, y, w, h)
 
-                                        val outputFile = File.createTempFile("cropped_rec_", ".jpg", context.cacheDir)
+                                        val outputFile = File.createTempFile(AttachmentRepository.CROPPED_FILE_PREFIX, ".jpg", context.cacheDir)
                                         FileOutputStream(outputFile).use { fos ->
                                             croppedBitmap.compress(Bitmap.CompressFormat.JPEG, ImageUtils.JPEG_QUALITY, fos)
                                         }
-                                        if (croppedBitmap != loadedBitmap) croppedBitmap.recycle()
+                                        if (croppedBitmap != sourceBitmap) croppedBitmap.recycle()
+                                        if (sourceBitmap != loadedBitmap) sourceBitmap.recycle()
                                         Uri.fromFile(outputFile)
                                     } catch (e: Exception) {
                                         e.printStackTrace()

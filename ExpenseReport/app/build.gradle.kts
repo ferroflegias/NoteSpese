@@ -139,8 +139,9 @@ dependencies {
     implementation("com.dropbox.core:dropbox-core-sdk:7.0.0")
     implementation("com.dropbox.core:dropbox-android-sdk:7.0.0")
 
-    // ML Kit Text Recognition for OCR
-    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")
+    // ML Kit Text Recognition for OCR, with the model bundled in the APK: it works offline
+    // and does not wait for Google Play Services to download the model on first use
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     // Coil for Compose Image Loading
     implementation("io.coil-kt:coil-compose:2.5.0")

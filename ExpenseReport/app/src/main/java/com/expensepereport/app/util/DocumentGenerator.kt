@@ -344,7 +344,7 @@ object DocumentGenerator {
         bytes.size >= PDF_MAGIC.size && bytes.copyOfRange(0, PDF_MAGIC.size).contentEquals(PDF_MAGIC)
 
     /**
-     * Decodes an image at a resolution sufficient for the target box (at ~4x for print quality),
+     * Decodes an image at a resolution sufficient for the target box (up to ~6x, i.e. 300+ dpi),
      * instead of loading multi-megapixel photos at full size.
      */
     private fun decodeSampledBitmap(bytes: ByteArray, targetWidth: Float, targetHeight: Float): Bitmap? {
@@ -352,7 +352,7 @@ object DocumentGenerator {
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        val maxDimension = (maxOf(targetWidth, targetHeight) * 4).toInt()
+        val maxDimension = (maxOf(targetWidth, targetHeight) * 6).toInt()
         val options = BitmapFactory.Options().apply {
             inSampleSize = ImageUtils.calculateInSampleSize(bounds.outWidth, bounds.outHeight, maxDimension)
             inPreferredConfig = Bitmap.Config.ARGB_8888

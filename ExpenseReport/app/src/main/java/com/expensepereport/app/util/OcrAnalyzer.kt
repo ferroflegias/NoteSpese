@@ -9,9 +9,11 @@ import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import java.util.regex.Pattern
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 data class OcrResult(
     val dataStr: String,
@@ -22,29 +24,48 @@ data class OcrResult(
     val noteExtracted: String
 )
 
+/** OCR failure with a message suitable for the user. */
+class OcrException(message: String) : Exception(message)
+
 object OcrAnalyzer {
 
+    private const val OCR_TIMEOUT_MS = 30_000L
+
+    /**
+     * Returns the data extracted from the receipt, or null if no text was found.
+     * Throws [OcrException] when the image cannot be read or text recognition fails.
+     */
     suspend fun analyzeReceipt(context: Context, uri: Uri, isPdf: Boolean = false): OcrResult? {
         val bitmap = if (isPdf) {
             renderPdfFirstPageToBitmap(context, uri)
         } else {
-            ImageUtils.loadOrientedBitmap(context, uri) ?: renderPdfFirstPageToBitmap(context, uri)
-        } ?: return null
+            ImageUtils.loadOrientedBitmap(context, uri, ImageUtils.PREVIEW_MAX_DIMENSION)
+                ?: renderPdfFirstPageToBitmap(context, uri)
+        } ?: throw OcrException("impossibile leggere l'immagine selezionata")
 
         val inputImage = InputImage.fromBitmap(bitmap, 0)
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-        val visionText: Text? = try {
-            suspendCancellableCoroutine { continuation ->
-                recognizer.process(inputImage)
-                    .addOnSuccessListener { result -> continuation.resume(result) }
-                    .addOnFailureListener { continuation.resume(null) }
-            }
+        val visionText: Text = try {
+            withTimeoutOrNull(OCR_TIMEOUT_MS) {
+                suspendCancellableCoroutine { continuation ->
+                    recognizer.process(inputImage)
+                        .addOnSuccessListener { result -> if (continuation.isActive) continuation.resume(result) }
+                        .addOnFailureListener { e ->
+                            if (continuation.isActive) {
+                                continuation.resumeWithException(
+                                    OcrException("riconoscimento del testo non riuscito (${e.localizedMessage ?: e.javaClass.simpleName})")
+                                )
+                            }
+                        }
+                        .addOnCanceledListener {
+                            if (continuation.isActive) continuation.resumeWithException(OcrException("riconoscimento annullato"))
+                        }
+                }
+            } ?: throw OcrException("il riconoscimento del testo non ha risposto entro ${OCR_TIMEOUT_MS / 1000} secondi")
         } finally {
             recognizer.close()
         }
-
-        if (visionText == null) return null
 
         val fullText = visionText.text
         if (fullText.isBlank()) return null
