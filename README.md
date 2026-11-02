@@ -4,6 +4,8 @@
 
 Le spese vengono salvate **in locale sul dispositivo** (database SQLite tramite Room), mentre allegati e backup del database vengono archiviati nel **Dropbox** personale dell'utente (in una cartella riservata all'app). L'app compila automaticamente il **modello Excel ufficiale** delle note spese e genera un **PDF cumulativo degli allegati in scala di grigi** pronto per la stampa.
 
+> 📱 **iPhone**: è disponibile una **WebApp installabile** (cartella [`webapp/`](webapp/)) che usa gli stessi backup Dropbox dell'app Android. Vedi [Uso su iPhone (WebApp)](#-uso-su-iphone-webapp).
+
 > ℹ️ Le versioni precedenti del progetto erano una WebApp in Python/Streamlit con database Supabase: il codice è stato rimosso dal repository ma resta consultabile nella cronologia git.
 
 ---
@@ -35,6 +37,11 @@ L'app è organizzata in 5 schede accessibili dalla barra di navigazione inferior
 * **⚙️ Settings — Account, backup e modello**:
   * Collegamento a **Dropbox** con un tocco (nessuna configurazione SHA-1 o Google Cloud).
   * **Backup automatico giornaliero** del database su Dropbox (orario configurabile, default 02:00), backup manuale e **ripristino** da un backup esistente. I backup più vecchi di 30 giorni vengono eliminati automaticamente.
+  * Il nome di ogni backup contiene il **nome del dispositivo** che l'ha creato (es. `..._Pixel-8.db`, `..._iPhone.db`).
+  * Indicatore **🟢 tutti i dati sono in un backup / 🟠 modifiche non ancora salvate**.
+  * **Avviso prima di un ripristino rischioso**: modifiche locali non ancora salvate in un backup, oppure backup scelto più vecchio dell'ultimo disponibile.
+  * **Copia di sicurezza automatica** dei dati attuali (cartella `Backups_PreRipristino`) prima di ogni ripristino: se non può essere salvata, il ripristino viene annullato.
+  * **Caricamento su Dropbox degli allegati rimasti solo sul telefono** (salvati quando Dropbox non era collegato), così diventano visibili anche dagli altri dispositivi.
   * **Importazione** di un database esistente da file `.db` (SQLite) o `.json` (sostituisce tutte le spese presenti, previa conferma).
   * Caricamento del **modello Excel** (`Note spese 2026.xlsx`) usato per l'esportazione.
 
@@ -48,8 +55,10 @@ Dropbox/App/<nome app Dropbox>/
 │   └── AAAA/
 │       └── MM/
 │           └── rec_<data-spesa>_<AAAAMMGG_HHMMSS>.jpg | .pdf
-└── Backups/
-    └── expense_report_backup_<AAAAMMGG_HHMMSS>.db   (conservati 30 giorni)
+├── Backups/
+│   └── expense_report_backup_<AAAAMMGG_HHMMSS>_<dispositivo>.db   (conservati 30 giorni)
+└── Backups_PreRipristino/
+    └── expense_report_backup_<AAAAMMGG_HHMMSS>_<dispositivo>.db   (copie di sicurezza, 30 giorni)
 ```
 
 Se Dropbox non è collegato (o il caricamento fallisce) gli allegati vengono salvati nella memoria privata dell'app sul telefono.
@@ -67,6 +76,40 @@ Se Dropbox non è collegato (o il caricamento fallisce) gli allegati vengono sal
    * facoltativamente importa i dati esistenti con **📥 Importa File Database (.db / .json)**.
 
 **Requisiti**: Android 8.0 (API 26) o superiore. Permessi richiesti: Internet e Fotocamera (i file si scelgono con il selettore di sistema, senza permessi di accesso alla memoria).
+
+---
+
+## 📱 Uso su iPhone (WebApp)
+
+Su iPhone l'app è una **WebApp installabile (PWA)**: nessun account Apple Developer, nessuna installazione da computer, nessuna scadenza. Si apre da Safari e si aggiunge alla schermata Home.
+
+* I dati sono salvati **sull'iPhone** (funziona anche offline) e si scambiano con il telefono Android tramite **gli stessi backup su Dropbox**: il file `.db` è compatibile in entrambe le direzioni.
+* Nessun server: il sito su GitHub Pages contiene solo il codice dell'app, le spese restano nell'iPhone e nel tuo Dropbox.
+* Stato attuale: inserimento, registri (modifica/eliminazione, apertura allegati Dropbox), report, backup/ripristino con le stesse protezioni dell'app Android, importazione/esportazione del file `.db`. **Foto/PDF con OCR ed export Excel/PDF arriveranno nella fase successiva**.
+
+### Uso consigliato (lavoro alternato tra i due telefoni)
+
+1. **All'inizio** ripristina l'ultimo backup (la WebApp lo propone da sola se ne trova uno più recente).
+2. Inserisci o modifica le spese.
+3. **Alla fine** esegui un backup (la WebApp mostra 🟠 finché ci sono modifiche non salvate).
+
+### Configurazione (una volta sola)
+
+1. **GitHub Pages**: nel repository vai in *Settings → Pages* e in *Build and deployment → Source* scegli **GitHub Actions**. La Action **WebApp (GitHub Pages)** pubblica la WebApp a ogni modifica su `main` all'indirizzo `https://<utente>.github.io/NoteSpese/`. Usa lo stesso secret/variabile `DROPBOX_APP_KEY` dell'APK.
+2. **Dropbox**: nella console Dropbox ([dropbox.com/developers/apps](https://www.dropbox.com/developers/apps)) apri la tua app → *Settings → OAuth 2 → Redirect URIs* e aggiungi `https://<utente>.github.io/NoteSpese/` (l'indirizzo esatto è mostrato in fondo alla scheda Settings della WebApp).
+3. **iPhone**: apri l'indirizzo in **Safari** → pulsante *Condividi* → **Aggiungi alla schermata Home**. Apri l'app dall'icona → *Settings* → **Collega Dropbox** → ripristina l'ultimo backup.
+
+> Se dopo l'autorizzazione Dropbox non torna all'app installata, usa *Settings → "Il collegamento non torna all'app? Usa il codice"*: Dropbox mostra un codice da incollare nell'app.
+
+### Sviluppo
+
+```bash
+cd webapp
+npm install
+npm test        # test, inclusa la compatibilità con i backup dell'app Android
+npm run dev     # server locale
+npm run build   # versione di produzione in webapp/dist
+```
 
 ---
 
@@ -95,8 +138,9 @@ NoteSpese/
 │       │   ├── ui/                Schermate, ritaglio foto, componenti condivisi
 │       │   └── util/              Excel/PDF, OCR, immagini, backup pianificato, formati
 │       └── test/                  Test unitari (OCR, categorie, formati)
+├── webapp/                        WebApp per iPhone (PWA, Vite + sql.js)
 ├── modello/Note spese 2026.xlsx   Modello Excel da caricare nell'app
-└── .github/workflows/             Build e firma automatica dell'APK
+└── .github/workflows/             Build e firma dell'APK, pubblicazione della WebApp
 ```
 
 ---

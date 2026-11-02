@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Note Spese</title>
+  <meta name="description" content="PerExpenseReport: note spese con backup condivisi su Dropbox con l'app Android.">
+  <meta name="theme-color" content="#2E7D32">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Note Spese">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+</head>
+<body>
+  <header>
+    <div class="title">🧾 Note Spese</div>
+  </header>
+  <div id="banners"></div>
+  <main id="content"><p class="muted">Caricamento...</p></main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <nav>
+    <button data-tab="spesa"><span>➕</span>Spesa</button>
+    <button data-tab="registri"><span>📑</span>Registri</button>
+    <button data-tab="report"><span>📊</span>Report</button>
+    <button data-tab="export"><span>📁</span>Export</button>
+    <button data-tab="settings"><span>⚙️</span>Settings</button>
+  </nav>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
