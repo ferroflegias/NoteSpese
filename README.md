@@ -85,7 +85,13 @@ Su iPhone l'app è una **WebApp installabile (PWA)**: nessun account Apple Devel
 
 * I dati sono salvati **sull'iPhone** (funziona anche offline) e si scambiano con il telefono Android tramite **gli stessi backup su Dropbox**: il file `.db` è compatibile in entrambe le direzioni.
 * Nessun server: il sito su GitHub Pages contiene solo il codice dell'app, le spese restano nell'iPhone e nel tuo Dropbox.
-* Stato attuale: inserimento, registri (modifica/eliminazione, apertura allegati Dropbox), report, backup/ripristino con le stesse protezioni dell'app Android, importazione/esportazione del file `.db`. **Foto/PDF con OCR ed export Excel/PDF arriveranno nella fase successiva**.
+* Funzioni (le stesse dell'app Android):
+  * **Spesa**: allegato da **foto** (fotocamera o libreria, con **ritaglio** e rotazione) o **PDF**; **OCR sul dispositivo** (Tesseract.js, lingua italiana) che precompila data, esercente, importo, categoria e pagamento. Il motore OCR (~5 MB) si scarica al primo uso e poi funziona anche offline.
+  * **Registri**: modifica ed eliminazione, apertura e **sostituzione dell'allegato**.
+  * **Report** mensile.
+  * **Export**: **Excel** sul modello ufficiale (mese, intervallo o anno, con le stesse regole: somme nello stesso giorno, evidenziazione della valuta estera) e **PDF degli allegati in scala di grigi** (4 per pagina, PDF uniti in coda). I file si condividono con il pannello di iOS (Mail, WhatsApp, Salva su File…).
+  * **Settings**: Dropbox, backup/ripristino con le stesse protezioni dell'app Android, **modello Excel** (caricabile da File oppure il modello standard 2026 incluso), caricamento su Dropbox degli allegati rimasti sul dispositivo, importazione/esportazione del file `.db`.
+* Gli allegati vanno su Dropbox nella stessa cartella `Allegati/AAAA/MM/` dell'app Android, quindi sono visibili da entrambi i telefoni. Senza connessione restano sull'iPhone finché non li carichi da *Settings*.
 
 ### Uso consigliato (lavoro alternato tra i due telefoni)
 

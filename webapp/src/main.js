@@ -3,15 +3,20 @@ import wasmUrl from 'sql.js/dist/sql-wasm.wasm?url';
 import './style.css';
 
 import { kvGet, kvSet, requestPersistentStorage } from './storage.js';
+import { $, esc, toast, setStatus, openDialog, confirmDialog, shareOrDownload } from './ui/common.js';
+import { attachmentPicker } from './ui/attachmentPicker.js';
+import { saveAttachment, readAttachment, deleteAttachment, isLocalOnly, uploadLocalAttachments } from './attachments.js';
+import { isPdfBytes } from './imageTools.js';
+import { EXCEL_MODES, isXlsx, fillExcelTemplate, excelFileName, templateSheetNames } from './core/excelExport.js';
 import * as dropbox from './dropbox.js';
 import { listBackups, uploadBackup, downloadBackup } from './backupService.js';
 import {
   createDatabase, openDatabase, countSpese, listSpese, speseForMonth, getSpesa,
-  insertSpesa, updateSpesa, deleteSpesa, exportDatabase, DbError
+  insertSpesa, updateSpesa, updateAttachmentPath, deleteSpesa, exportDatabase, DbError
 } from './core/dbcore.js';
 import {
   CATEGORY_OPTIONS, PAYMENT_OPTIONS, RISTORANTI, PAYMENT_CC, TELEPASS,
-  categoryKey, paymentLabel, monthTotals
+  categoryKey, paymentLabel, monthTotals, categoryFromOcr, paymentFromOcr
 } from './core/categories.js';
 import {
   todayIsoDate, isValidIsoDate, parseAmount, formatAmount, formatDateTime,
@@ -38,29 +43,6 @@ const state = {
 
 // ---------- utilità ----------
 
-const $ = (sel, root = document) => root.querySelector(sel);
-
-function esc(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  })[c]);
-}
-
-function toast(message, kind = 'info') {
-  const el = $('#toast');
-  el.textContent = message;
-  el.className = `toast show ${kind}`;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove('show'), kind === 'error' ? 8000 : 4500);
-}
-
-function setStatus(container, message, kind = 'info') {
-  const el = $('.status', container);
-  if (!el) return toast(message, kind);
-  el.textContent = message;
-  el.className = `status ${kind}`;
-}
-
 async function busy(action) {
   if (state.busy) return;
   state.busy = true;
@@ -71,39 +53,6 @@ async function busy(action) {
     state.busy = false;
     document.body.classList.remove('busy');
   }
-}
-
-/** Finestra di dialogo modale; restituisce l'elemento <dialog>. */
-function openDialog(html, { onClose } = {}) {
-  const dialog = document.createElement('dialog');
-  dialog.innerHTML = `<div class="dialog-body">${html}</div>`;
-  document.body.appendChild(dialog);
-  dialog.addEventListener('close', () => {
-    onClose?.();
-    dialog.remove();
-  });
-  dialog.addEventListener('click', (e) => {
-    if (e.target.matches('[data-close]')) dialog.close();
-  });
-  dialog.showModal();
-  return dialog;
-}
-
-function confirmDialog(title, bodyHtml, confirmLabel = 'Conferma') {
-  return new Promise((resolve) => {
-    let result = false;
-    const dialog = openDialog(`
-      <h3>${title}</h3>
-      <div>${bodyHtml}</div>
-      <div class="dialog-actions">
-        <button class="btn secondary" data-close>Annulla</button>
-        <button class="btn danger" data-ok>${esc(confirmLabel)}</button>
-      </div>`, { onClose: () => resolve(result) });
-    $('[data-ok]', dialog).addEventListener('click', () => {
-      result = true;
-      dialog.close();
-    });
-  });
 }
 
 // ---------- database locale ----------
@@ -291,6 +240,41 @@ async function showRestoreList() {
   });
 }
 
+// ---------- allegati ----------
+
+/** Salva l'allegato scelto (Dropbox o, se non raggiungibile, su questo dispositivo). */
+async function storeAttachment(picked, dataSpesa) {
+  const saved = await saveAttachment(picked.bytes, {
+    isPdf: picked.isPdf,
+    dataSpesa,
+    dropboxConnected: Boolean(state.account)
+  });
+  return saved;
+}
+
+/** OCR della foto o del PDF e compilazione del form (come nell'app Android). */
+async function runOcr(file, isPdf, form, root) {
+  setStatus(root, '🔍 Analisi OCR in corso...');
+  let res;
+  try {
+    const { analyzeReceipt } = await import('./ocr.js');
+    res = await analyzeReceipt(file, { isPdf, onProgress: (msg) => setStatus(root, msg) });
+  } catch (e) {
+    return setStatus(root, `⚠️ OCR non riuscito: ${e.message ?? e}`, 'error');
+  }
+  if (!res) return setStatus(root, `⚠️ Nessun testo rilevato ${isPdf ? 'nel PDF' : 'nella foto'}.`, 'error');
+  form.data.value = res.dataStr;
+  form.destinazione.value = res.destinazione;
+  if (res.importo > 0) form.importo.value = formatAmount(res.importo).replace('.', ',');
+  const cat = categoryFromOcr(res.categoriaSuggerita);
+  const pay = paymentFromOcr(res.pagamentoSuggerito);
+  form.querySelector(`input[name=categoria][value="${CSS.escape(cat)}"]`).checked = true;
+  form.querySelector(`input[name=pagamento][value="${CSS.escape(pay)}"]`).checked = true;
+  form.note.value = res.noteExtracted;
+  form.dispatchEvent(new Event('change'));
+  setStatus(root, '✅ Dati estratti con OCR: controllali prima di salvare.', 'ok');
+}
+
 // ---------- scheda Spesa ----------
 
 function chips(name, options, selected) {
@@ -302,8 +286,9 @@ function chips(name, options, selected) {
 function renderSpesa(root) {
   root.innerHTML = `
     <h2>➕ Registra Nuova Spesa</h2>
-    <p class="muted">📷 Foto, PDF e lettura automatica dello scontrino arriveranno nella prossima versione:
-    per ora le spese si inseriscono a mano.</p>
+    <h3>Step 1: Allegato (Foto o PDF)</h3>
+    <div id="spesa-attachment"></div>
+    <h3>Step 2: Dati Spesa</h3>
     <form id="spesa-form" class="form" novalidate>
       <label>Data<input name="data" type="date" value="${todayIsoDate()}" required></label>
       <label>Destinazione / Esercente<input name="destinazione" autocomplete="off"></label>
@@ -319,6 +304,9 @@ function renderSpesa(root) {
       <div class="status"></div>
     </form>`;
   const form = $('#spesa-form', root);
+  const picker = attachmentPicker($('#spesa-attachment', root), {
+    onOcr: (file, isPdf) => runOcr(file, isPdf, form, root)
+  });
   const updatePayment = () => {
     $('#payment-set', root).hidden = form.categoria.value === TELEPASS;
   };
@@ -332,24 +320,36 @@ function renderSpesa(root) {
     const payment = form.pagamento.value;
     const importo = parseAmount(form.importo.value) ?? 0;
     if (importo <= 0 && category !== TELEPASS) return setStatus(root, '⚠️ Inserisci un importo valido!', 'error');
-    try {
-      insertSpesa(state.db, {
-        data,
-        destinazione: form.destinazione.value,
-        scopo: form.scopo.value,
-        categoria: categoryKey(category, payment),
-        metodo_pagamento: paymentLabel(category, payment),
-        importo,
-        note: form.note.value,
-        valuta_straniera: form.valuta.checked
-      });
-      await afterLocalChange();
-      ['destinazione', 'scopo', 'importo', 'note'].forEach((f) => { form[f].value = ''; });
-      form.valuta.checked = false;
-      setStatus(root, '🎉 Spesa registrata con successo!', 'ok');
-    } catch (err) {
-      setStatus(root, `❌ Errore durante il salvataggio: ${err.message}`, 'error');
-    }
+    await busy(async () => {
+      try {
+        const picked = await picker.value();
+        let saved = null;
+        if (picked) {
+          setStatus(root, '⏫ Salvataggio allegato...');
+          saved = await storeAttachment(picked, data);
+        }
+        insertSpesa(state.db, {
+          data,
+          destinazione: form.destinazione.value,
+          scopo: form.scopo.value,
+          categoria: categoryKey(category, payment),
+          metodo_pagamento: paymentLabel(category, payment),
+          importo,
+          note: form.note.value,
+          allegato_path: saved?.path ?? null,
+          valuta_straniera: form.valuta.checked
+        });
+        await afterLocalChange();
+        ['destinazione', 'scopo', 'importo', 'note'].forEach((f) => { form[f].value = ''; });
+        form.valuta.checked = false;
+        picker.clear();
+        setStatus(root, saved && !saved.uploaded
+          ? '🎉 Spesa registrata. ⚠️ Dropbox non raggiungibile: l\'allegato è salvato solo su questo dispositivo (caricalo da Settings).'
+          : '🎉 Spesa registrata con successo!', 'ok');
+      } catch (err) {
+        setStatus(root, `❌ Errore durante il salvataggio: ${err.message}`, 'error');
+      }
+    });
   });
 }
 
@@ -358,6 +358,7 @@ function renderSpesa(root) {
 function attachmentLabel(path) {
   switch (attachmentKind(path)) {
     case 'dropbox': return '📎 Allegato su Dropbox';
+    case 'local': return '📱 Allegato solo su questo dispositivo (da caricare su Dropbox)';
     case 'link': return '🔗 Allegato (link Google Drive)';
     case 'device': return '📱 Allegato solo sul telefono Android';
     default: return '';
@@ -387,18 +388,19 @@ function renderRegistri(root) {
 async function openAttachment(path, container) {
   const kind = attachmentKind(path);
   if (kind === 'link') return window.open(path, '_blank');
-  if (kind !== 'dropbox') return;
+  if (kind !== 'dropbox' && kind !== 'local') return;
   const viewer = $('.viewer', container);
-  viewer.innerHTML = '<p class="muted">Scaricamento allegato...</p>';
+  viewer.innerHTML = '<p class="muted">Caricamento allegato...</p>';
   try {
-    const bytes = await dropbox.downloadFile(path.slice(dropbox.PATH_PREFIX.length));
-    const isPdf = path.toLowerCase().endsWith('.pdf');
+    const bytes = await readAttachment(path);
+    if (!bytes) throw new Error('file non trovato');
+    const isPdf = isPdfBytes(bytes);
     const url = URL.createObjectURL(new Blob([bytes], { type: isPdf ? 'application/pdf' : 'image/jpeg' }));
     viewer.innerHTML = isPdf
       ? `<a class="btn secondary" href="${url}" target="_blank" rel="noopener">📄 Apri il PDF</a>`
       : `<img src="${url}" alt="Allegato">`;
   } catch (e) {
-    viewer.innerHTML = `<p class="status error">❌ Impossibile scaricare l'allegato: ${esc(e.message)}</p>`;
+    viewer.innerHTML = `<p class="status error">❌ Impossibile aprire l'allegato: ${esc(e.message)}</p>`;
   }
 }
 
@@ -416,8 +418,10 @@ function editSpesa(id) {
       <label>Note<input name="note" value="${esc(s.note)}"></label>
       <small class="muted">Categoria: ${esc(s.categoria)} | Pagamento: ${esc(s.metodo_pagamento ?? '-')}</small>
       ${s.allegato_path ? `<div class="attach">${attachmentLabel(s.allegato_path)}</div>` : ''}
-      ${kind === 'dropbox' || kind === 'link' ? '<button type="button" class="btn secondary" data-open>👁️ Apri allegato</button>' : ''}
+      ${['dropbox', 'local', 'link'].includes(kind) ? '<button type="button" class="btn secondary" data-open>👁️ Apri allegato</button>' : ''}
       <div class="viewer"></div>
+      <h4>${s.allegato_path ? 'Sostituisci allegato' : 'Aggiungi allegato'}</h4>
+      <div class="edit-attachment"></div>
       <div class="status"></div>
       <div class="dialog-actions">
         <button type="button" class="btn danger" data-delete>🗑️ Elimina</button>
@@ -426,23 +430,45 @@ function editSpesa(id) {
       </div>
     </form>`);
   const form = $('form', dialog);
+  const picker = attachmentPicker($('.edit-attachment', dialog));
   $('[data-open]', dialog)?.addEventListener('click', () => openAttachment(s.allegato_path, dialog));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!isValidIsoDate(form.data.value)) return setStatus(dialog, '⚠️ Data non valida!', 'error');
     const importo = parseAmount(form.importo.value);
     if (importo == null) return setStatus(dialog, '⚠️ Importo non valido!', 'error');
-    updateSpesa(state.db, id, {
-      data: form.data.value,
-      destinazione: form.destinazione.value,
-      scopo: form.scopo.value,
-      importo,
-      note: form.note.value
+    await busy(async () => {
+      try {
+        const picked = await picker.value();
+        let saved = null;
+        if (picked) {
+          setStatus(dialog, '⏫ Salvataggio nuovo allegato...');
+          saved = await storeAttachment(picked, form.data.value);
+        }
+        updateSpesa(state.db, id, {
+          data: form.data.value,
+          destinazione: form.destinazione.value,
+          scopo: form.scopo.value,
+          importo,
+          note: form.note.value
+        });
+        if (saved) updateAttachmentPath(state.db, id, saved.path);
+        await afterLocalChange();
+        // Il vecchio allegato viene eliminato solo dopo aver salvato il nuovo
+        if (saved && s.allegato_path) {
+          try {
+            await deleteAttachment(s.allegato_path);
+          } catch {
+            // vecchio file non rimosso: nessun dato perso
+          }
+        }
+        dialog.close();
+        toast(saved && !saved.uploaded ? '✅ Spesa aggiornata (allegato solo su questo dispositivo).' : '✅ Spesa aggiornata.', 'ok');
+        renderTab();
+      } catch (err) {
+        setStatus(dialog, `❌ Errore durante il salvataggio: ${err.message}`, 'error');
+      }
     });
-    await afterLocalChange();
-    dialog.close();
-    toast('✅ Spesa aggiornata.', 'ok');
-    renderTab();
   });
   $('[data-delete]', dialog).addEventListener('click', async () => {
     const extra = kind === 'dropbox' ? "<p>Verrà eliminato anche l'allegato su Dropbox.</p>" : '';
@@ -450,9 +476,9 @@ function editSpesa(id) {
     deleteSpesa(state.db, id);
     await afterLocalChange();
     dialog.close();
-    if (kind === 'dropbox' && state.account) {
+    if (kind === 'dropbox' || kind === 'local') {
       try {
-        await dropbox.deleteFile(s.allegato_path.slice(dropbox.PATH_PREFIX.length));
+        await deleteAttachment(s.allegato_path);
       } catch {
         toast("⚠️ Spesa eliminata, ma l'allegato su Dropbox non è stato rimosso.", 'error');
       }
@@ -502,20 +528,133 @@ function renderReport(root) {
 
 // ---------- scheda Export ----------
 
-function renderExport(root) {
+async function loadExcelTemplate() {
+  return (await kvGet('excelTemplate')) ?? null;
+}
+
+function monthOptions(selected) {
+  return MONTH_NAMES.map((m, i) => `<option value="${i + 1}" ${i + 1 === selected ? 'selected' : ''}>${m}</option>`).join('');
+}
+
+async function renderExport(root) {
+  const now = new Date();
+  const template = await loadExcelTemplate();
+  let year = now.getFullYear();
+  const current = now.getMonth() + 1;
   root.innerHTML = `
-    <h2>📁 Export Excel & PDF</h2>
-    <div class="panel">
-      <p>La compilazione del modello Excel e il PDF degli allegati in scala di grigi arriveranno
-      nella prossima versione della WebApp.</p>
-      <p>Nel frattempo puoi generarli dall'app Android: fai un backup qui, ripristinalo sul
-      telefono Android e usa la scheda Export.</p>
-    </div>`;
+    <h2>📁 Generazione & Esportazione Documenti</h2>
+    <div class="row center">
+      <button class="btn secondary" data-year="-1">◀</button>
+      <b class="grow center-text" data-year-label>Anno ${year}</b>
+      <button class="btn secondary" data-year="1">▶</button>
+    </div>
+
+    <h3>📊 Genera & Condividi Excel</h3>
+    ${template ? `<p class="muted small">Modello: ${esc(template.name)}</p>` : `
+      <div class="panel warn">⚠️ Nessun modello Excel caricato: caricalo in <b>Settings › Modello Excel</b>
+      (oppure usa il modello standard 2026).</div>`}
+    <div class="chips" data-modes>
+      <label class="chip"><input type="radio" name="mode" value="SINGLE_MONTH" checked><span>Mese Singolo</span></label>
+      <label class="chip"><input type="radio" name="mode" value="MONTH_RANGE"><span>Range Mesi</span></label>
+      <label class="chip"><input type="radio" name="mode" value="FULL_YEAR"><span>Anno</span></label>
+    </div>
+    <label data-start>Mese<select name="start">${monthOptions(current)}</select></label>
+    <label data-end hidden>Mese Fine<select name="end">${monthOptions(current)}</select></label>
+    <button class="btn primary" data-excel ${template ? '' : 'disabled'}>📊 Genera & Condividi Excel</button>
+
+    <h3>🖼️📄 Genera & Condividi PDF Allegati (scala di grigi)</h3>
+    <label>Mese<select name="pdfMonth">${monthOptions(current)}</select></label>
+    <button class="btn primary" data-pdf>📄 Genera & Condividi PDF Allegati</button>
+    <div class="status"></div>`;
+
+  const modeValue = () => root.querySelector('input[name=mode]:checked').value;
+  const updateMode = () => {
+    const mode = modeValue();
+    root.querySelector('[data-start]').hidden = mode === EXCEL_MODES.FULL_YEAR;
+    root.querySelector('[data-end]').hidden = mode !== EXCEL_MODES.MONTH_RANGE;
+    root.querySelector('[data-start]').firstChild.textContent = mode === EXCEL_MODES.MONTH_RANGE ? 'Mese Inizio' : 'Mese';
+  };
+  root.querySelector('[data-modes]').addEventListener('change', updateMode);
+  root.querySelectorAll('[data-year]').forEach((b) => b.addEventListener('click', () => {
+    year += Number(b.dataset.year);
+    root.querySelector('[data-year-label]').textContent = `Anno ${year}`;
+  }));
+
+  root.querySelector('[data-excel]').addEventListener('click', () => busy(async () => {
+    const mode = modeValue();
+    const a = Number(root.querySelector('[name=start]').value);
+    const b = Number(root.querySelector('[name=end]').value);
+    // Un intervallo scelto "al contrario" non esporterebbe nulla
+    const [start, end] = mode === EXCEL_MODES.FULL_YEAR ? [1, 12]
+      : mode === EXCEL_MODES.MONTH_RANGE ? [Math.min(a, b), Math.max(a, b)] : [a, a];
+    setStatus(root, '📊 Generazione Excel in corso...');
+    try {
+      
+      const bytes = await fillExcelTemplate(template.bytes, {
+        startMonth: start,
+        endMonth: end,
+        speseForMonth: (m) => speseForMonth(state.db, year, m)
+      });
+      setStatus(root, '✅ Excel generato.', 'ok');
+      await shareOrDownload(bytes, excelFileName(mode, year, start, end),
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e) {
+      setStatus(root, `❌ Errore durante la generazione dell'Excel: ${e.message}`, 'error');
+    }
+  }));
+
+  root.querySelector('[data-pdf]').addEventListener('click', () => busy(async () => {
+    const month = Number(root.querySelector('[name=pdfMonth]').value);
+    setStatus(root, '📄 Generazione PDF in corso...');
+    try {
+      const { generatePdfAttachments } = await import('./pdfExport.js');
+      const result = await generatePdfAttachments({
+        spese: speseForMonth(state.db, year, month),
+        year,
+        month,
+        readAttachment,
+        onProgress: (msg) => setStatus(root, msg)
+      });
+      if (!result) {
+        setStatus(root, `⚠️ Nessun allegato trovato per ${MONTH_NAMES[month - 1]} ${year}.`, 'error');
+        return;
+      }
+      setStatus(root, '✅ PDF generato.', 'ok');
+      await shareOrDownload(result.bytes, result.fileName, 'application/pdf');
+    } catch (e) {
+      setStatus(root, `❌ Errore nella generazione del PDF: ${e.message}`, 'error');
+    }
+  }));
 }
 
 // ---------- scheda Settings ----------
 
+async function showTemplateStatus(root) {
+  const el = $('[data-template-status]', root);
+  const t = await loadExcelTemplate();
+  el.innerHTML = t
+    ? `<span class="ok-text">✅ Modello Excel attivo: ${esc(t.name)}</span>`
+    : '<span class="error-text">⚠️ Nessun modello Excel caricato. Carica \'Note spese 2026.xlsx\'.</span>';
+}
+
+async function saveTemplate(bytes, name, root) {
+  if (!isXlsx(bytes)) return setStatus(root, '❌ Il file non è un file Excel .xlsx.', 'error');
+  try {
+    
+    const sheets = await templateSheetNames(bytes);
+    if (!sheets.includes('Gennaio')) {
+      return setStatus(root, '❌ Il file non sembra il modello delle note spese: manca il foglio "Gennaio".', 'error');
+    }
+  } catch {
+    return setStatus(root, '❌ Il file Excel non è leggibile.', 'error');
+  }
+  await kvSet('excelTemplate', { name, bytes });
+  setStatus(root, '✅ Modello Excel salvato con successo!', 'ok');
+  showTemplateStatus(root);
+}
+
 function renderSettings(root) {
+  const localCount = listSpese(state.db).filter((s) => isLocalOnly(s.allegato_path)).length;
   const unsaved = hasUnsavedChanges(state.sync);
   const lastSync = state.sync.lastSyncMs ? formatDateTime(state.sync.lastSyncMs) : 'mai';
   root.innerHTML = `
@@ -559,6 +698,16 @@ function renderSettings(root) {
     <button class="btn primary" data-action="backup">💾 Esegui Backup Ora su Dropbox</button>
     <button class="btn secondary" data-action="restore">🔄 Ripristina Database da Backup Dropbox</button>
     <p class="muted">Uso consigliato: all'inizio ripristina l'ultimo backup, alla fine esegui un backup.</p>
+
+    ${localCount > 0 ? `
+      <p class="muted">📎 ${localCount} allegati sono salvati solo su questo dispositivo e non sono visibili dal telefono Android.</p>
+      <button class="btn secondary" data-action="upload-local">📤 Carica su Dropbox gli Allegati Locali (${localCount})</button>` : ''}
+
+    <h3>📊 Modello Excel Note Spese</h3>
+    <div data-template-status class="muted">...</div>
+    <button class="btn secondary" data-action="template">📁 Carica Modello Excel (.xlsx)</button>
+    <input type="file" name="templateFile" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+    <button class="btn secondary" data-action="template-default">📄 Usa il modello standard 2026</button>
 
     <h3>📥 File del database</h3>
     <button class="btn secondary" data-action="import">📥 Importa File Database (.db)</button>
@@ -624,6 +773,35 @@ function renderSettings(root) {
           $('[name=importFile]', root).click();
         }
         break;
+      case 'upload-local': {
+        if (!state.account) return setStatus(root, '⚠️ Collega prima Dropbox per caricare gli allegati.', 'error');
+        await busy(async () => {
+          toast('Caricamento allegati locali su Dropbox...');
+          const r = await uploadLocalAttachments(listSpese(state.db), async (id, path) => {
+            updateAttachmentPath(state.db, id, path);
+            await afterLocalChange();
+          });
+          renderTab();
+          toast(r.failed === 0
+            ? `🎉 ${r.uploaded} allegati caricati su Dropbox. Esegui un backup per renderli visibili sul telefono Android.`
+            : `⚠️ ${r.uploaded} allegati caricati, ${r.failed} non caricati: riprova più tardi.`, r.failed ? 'error' : 'ok');
+        });
+        break;
+      }
+      case 'template':
+        $('[name=templateFile]', root).click();
+        break;
+      case 'template-default':
+        await busy(async () => {
+          try {
+            const res = await fetch(`${import.meta.env.BASE_URL}modello/Note%20spese%202026.xlsx`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            await saveTemplate(new Uint8Array(await res.arrayBuffer()), 'Note spese 2026.xlsx (standard)', root);
+          } catch (e) {
+            setStatus(root, `❌ Impossibile scaricare il modello standard: ${e.message}`, 'error');
+          }
+        });
+        break;
       case 'export': {
         const blob = new Blob([exportDatabase(state.db)], { type: 'application/x-sqlite3' });
         const name = `expense_report_${todayIsoDate()}_${state.deviceName}.db`;
@@ -642,6 +820,13 @@ function renderSettings(root) {
       }
     }
   });
+
+  $('[name=templateFile]', root).addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (file) await saveTemplate(new Uint8Array(await file.arrayBuffer()), file.name, root);
+  });
+  showTemplateStatus(root);
 
   $('[name=importFile]', root).addEventListener('change', async (e) => {
     const file = e.target.files?.[0];
