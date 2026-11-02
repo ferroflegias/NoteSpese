@@ -3,6 +3,7 @@ package com.expensepereport.app.data
 import android.content.Context
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.expensepereport.app.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -25,7 +26,9 @@ class AttachmentRepository(
     suspend fun saveAttachment(uri: Uri, isPdf: Boolean, dataSpesa: String): String? {
         val fileBytes = withContext(Dispatchers.IO) {
             try {
-                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                // Photos are resized before upload: a full-resolution camera shot is 5-10 MB
+                val compressed = if (isPdf) null else ImageUtils.compressImageForAttachment(context, uri)
+                compressed ?: context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             } catch (e: Exception) {
                 e.printStackTrace()
                 null

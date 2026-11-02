@@ -25,6 +25,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.expensepereport.app.util.ImageUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -38,7 +39,9 @@ fun CropImageDialog(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isCropping by remember { mutableStateOf(false) }
 
     LaunchedEffect(sourceUri) {
         // Decoding a full-resolution photo is too slow for the main thread
@@ -245,6 +248,7 @@ fun CropImageDialog(
                 ) {
                     OutlinedButton(
                         onClick = onDismiss,
+                        enabled = !isCropping,
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Annulla", color = Color.White)
@@ -252,31 +256,51 @@ fun CropImageDialog(
 
                     Button(
                         onClick = {
-                            try {
-                                val origW = loadedBitmap.width
-                                val origH = loadedBitmap.height
+                            isCropping = true
+                            val left = cropLeft
+                            val top = cropTop
+                            val right = cropRight
+                            val bottom = cropBottom
+                            scope.launch {
+                                // Cropping and JPEG encoding take too long for the main thread
+                                val croppedUri = withContext(Dispatchers.Default) {
+                                    try {
+                                        val origW = loadedBitmap.width
+                                        val origH = loadedBitmap.height
 
-                                val x = (cropLeft * origW).toInt().coerceIn(0, origW - 1)
-                                val y = (cropTop * origH).toInt().coerceIn(0, origH - 1)
-                                val w = ((cropRight - cropLeft) * origW).toInt().coerceIn(1, origW - x)
-                                val h = ((cropBottom - cropTop) * origH).toInt().coerceIn(1, origH - y)
+                                        val x = (left * origW).toInt().coerceIn(0, origW - 1)
+                                        val y = (top * origH).toInt().coerceIn(0, origH - 1)
+                                        val w = ((right - left) * origW).toInt().coerceIn(1, origW - x)
+                                        val h = ((bottom - top) * origH).toInt().coerceIn(1, origH - y)
 
-                                val croppedBitmap = Bitmap.createBitmap(loadedBitmap, x, y, w, h)
+                                        val croppedBitmap = Bitmap.createBitmap(loadedBitmap, x, y, w, h)
 
-                                val outputFile = File.createTempFile("cropped_rec_", ".jpg", context.cacheDir)
-                                FileOutputStream(outputFile).use { fos ->
-                                    croppedBitmap.compress(Bitmap.CompressFormat.JPEG, 90, fos)
+                                        val outputFile = File.createTempFile("cropped_rec_", ".jpg", context.cacheDir)
+                                        FileOutputStream(outputFile).use { fos ->
+                                            croppedBitmap.compress(Bitmap.CompressFormat.JPEG, ImageUtils.JPEG_QUALITY, fos)
+                                        }
+                                        if (croppedBitmap != loadedBitmap) croppedBitmap.recycle()
+                                        Uri.fromFile(outputFile)
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        null
+                                    }
                                 }
-
-                                val croppedUri = Uri.fromFile(outputFile)
-                                onCropSuccess(croppedUri)
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                                onDismiss()
+                                isCropping = false
+                                if (croppedUri != null) onCropSuccess(croppedUri) else onDismiss()
                             }
                         },
+                        enabled = !isCropping,
                         modifier = Modifier.weight(1f)
                     ) {
+                        if (isCropping) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                        }
                         Text("✂️ Conferma")
                     }
                 }
