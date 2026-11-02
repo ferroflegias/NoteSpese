@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -22,21 +24,38 @@ android {
         }
     }
 
+    // Signing credentials are read from local.properties (not committed) or environment variables
+    val localProperties = Properties().apply {
+        val file = rootProject.file("local.properties")
+        if (file.exists()) file.inputStream().use { load(it) }
+    }
+    fun signingValue(key: String): String? =
+        localProperties.getProperty(key) ?: System.getenv(key)
+
+    val releaseStoreFile = signingValue("RELEASE_STORE_FILE")
+    val hasReleaseSigning = releaseStoreFile != null
+
     signingConfigs {
-        create("config") {
-            storeFile = file("release.keystore")
-            storePassword = "expense1234"
-            keyAlias = "releaseKey"
-            keyPassword = "expense1234"
+        if (hasReleaseSigning) {
+            create("config") {
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = signingValue("RELEASE_STORE_PASSWORD")
+                keyAlias = signingValue("RELEASE_KEY_ALIAS")
+                keyPassword = signingValue("RELEASE_KEY_PASSWORD")
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("config")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("config")
+            }
         }
         release {
-            signingConfig = signingConfigs.getByName("config")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("config")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
