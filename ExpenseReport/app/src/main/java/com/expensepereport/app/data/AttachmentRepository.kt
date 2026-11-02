@@ -102,6 +102,47 @@ class AttachmentRepository(
         }
     }
 
+    /** True for an attachment saved only in the private storage of this device. */
+    fun isLocalOnly(path: String?): Boolean =
+        !path.isNullOrBlank() && !DropboxService.isDropboxPath(path) && localFile(path) != null
+
+    /**
+     * Uploads to Dropbox the attachments saved only on this device (e.g. taken while Dropbox was
+     * not connected), updates the expenses with the new Dropbox path and deletes the local copy.
+     */
+    suspend fun uploadLocalAttachments(spesaRepository: SpesaRepository): LocalUploadResult {
+        if (!dropboxService.isConnected()) return LocalUploadResult(0, 0)
+        var uploaded = 0
+        var failed = 0
+        spesaRepository.getSpese().filter { isLocalOnly(it.allegatoPath) }.forEach { spesa ->
+            val file = localFile(spesa.allegatoPath!!) ?: return@forEach
+            val ext = file.extension.lowercase().ifBlank { "jpg" }
+            val bytes = withContext(Dispatchers.IO) {
+                try {
+                    file.readBytes()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    null
+                }
+            }
+            val newPath = bytes?.let { dropboxService.uploadAttachment(it, spesa.data, ext) }
+            if (newPath == null) {
+                failed++
+                return@forEach
+            }
+            try {
+                spesaRepository.updateSpesa(spesa.copy(allegatoPath = newPath))
+                withContext(Dispatchers.IO) { file.delete() }
+                uploaded++
+            } catch (e: Exception) {
+                e.printStackTrace()
+                dropboxService.deleteFile(newPath)
+                failed++
+            }
+        }
+        return LocalUploadResult(uploaded, failed)
+    }
+
     /**
      * Deletes the temporary photos taken with the camera or produced by the crop dialog:
      * once the expense is saved they have been copied (to Dropbox or to the private storage).
@@ -131,3 +172,5 @@ class AttachmentRepository(
             }
         }
 }
+
+data class LocalUploadResult(val uploaded: Int, val failed: Int)

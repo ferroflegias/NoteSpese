@@ -1,0 +1,69 @@
+name: WebApp (GitHub Pages)
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    paths:
+      - "webapp/**"
+      - ".github/workflows/webapp-pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webapp-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+
+      - run: npm ci
+
+      - name: Test (compatibilità con i backup Android)
+        run: npm test
+
+      - name: Check Dropbox App key
+        env:
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY || vars.DROPBOX_APP_KEY }}
+        run: |
+          if [ -z "$DROPBOX_APP_KEY" ]; then
+            echo "::warning::DROPBOX_APP_KEY non impostata: la WebApp chiederà l'App key nella scheda Settings."
+          fi
+
+      - name: Build
+        env:
+          VITE_DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY || vars.DROPBOX_APP_KEY }}
+        run: npm run build
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: webapp/dist
+
+  # La pubblicazione avviene solo da main: i branch di sviluppo vengono solo compilati e testati
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

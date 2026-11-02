@@ -145,7 +145,8 @@ class MainActivity : ComponentActivity() {
                                 SettingsScreen(
                                     settingsRepository = settingsRepository,
                                     spesaRepository = spesaRepository,
-                                    dropboxService = dropboxService
+                                    dropboxService = dropboxService,
+                                    attachmentRepository = attachmentRepository
                                 )
                             }
                         }
