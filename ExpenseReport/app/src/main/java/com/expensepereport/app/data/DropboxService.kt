@@ -130,7 +130,7 @@ class DropboxService(
                     .withAutorename(true)
                     .uploadAndFinish(input)
             }
-            PATH_PREFIX + metadata.pathDisplay
+            PATH_PREFIX + (metadata.pathDisplay ?: path)
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -178,8 +178,9 @@ class DropboxService(
             listBackupFiles(client)
                 .filter { it.serverModified.time < threshold }
                 .forEach { file ->
+                    val path = file.pathLower ?: return@forEach
                     try {
-                        client.files().deleteV2(file.pathLower)
+                        client.files().deleteV2(path)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -195,7 +196,10 @@ class DropboxService(
         try {
             listBackupFiles(client)
                 .sortedByDescending { it.serverModified }
-                .map { BackupEntry(it.name, it.pathLower, it.size, it.serverModified) }
+                .mapNotNull { file ->
+                    val path = file.pathLower ?: return@mapNotNull null
+                    BackupEntry(file.name, path, file.size, file.serverModified)
+                }
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()
