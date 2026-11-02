@@ -25,8 +25,8 @@ class AppSettingsRepository(private val context: Context) {
         private val KEY_BACKUP_ENABLED = booleanPreferencesKey("backup_enabled")
         private val KEY_BACKUP_HOUR = intPreferencesKey("backup_hour")
         private val KEY_BACKUP_MINUTE = intPreferencesKey("backup_minute")
-        private val KEY_GDRIVE_FOLDER_URL = stringPreferencesKey("gdrive_folder_url")
-        private val KEY_GOOGLE_ACCOUNT_EMAIL = stringPreferencesKey("google_account_email")
+        private val KEY_DROPBOX_CREDENTIAL = stringPreferencesKey("dropbox_credential")
+        private val KEY_DROPBOX_ACCOUNT = stringPreferencesKey("dropbox_account")
         private const val WORK_NAME_BACKUP = "daily_database_backup"
         private const val EXCEL_TEMPLATE_FILENAME = "Note_spese_2026_custom_template.xlsx"
     }
@@ -43,30 +43,24 @@ class AppSettingsRepository(private val context: Context) {
         prefs[KEY_BACKUP_MINUTE] ?: 0
     }
 
-    val gdriveFolderUrlFlow: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[KEY_GDRIVE_FOLDER_URL] ?: ""
+    /** Email of the connected Dropbox account, empty when Dropbox is not connected. */
+    val dropboxAccountFlow: Flow<String> = context.dataStore.data.map { prefs ->
+        prefs[KEY_DROPBOX_ACCOUNT] ?: ""
     }
 
-    val googleAccountEmailFlow: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[KEY_GOOGLE_ACCOUNT_EMAIL] ?: ""
-    }
+    /** Serialized Dropbox OAuth credential (includes the refresh token), empty when not connected. */
+    suspend fun getDropboxCredential(): String =
+        context.dataStore.data.first()[KEY_DROPBOX_CREDENTIAL] ?: ""
 
-    /** Saved account email, falling back to the account currently signed in with Google. */
-    suspend fun getActiveAccountEmail(): String {
-        val savedEmail = googleAccountEmailFlow.first()
-        if (savedEmail.isNotBlank()) return savedEmail
-        return GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
-    }
-
-    suspend fun saveGoogleAccountEmail(email: String) {
+    suspend fun saveDropboxCredential(credentialJson: String) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_GOOGLE_ACCOUNT_EMAIL] = email.trim()
+            prefs[KEY_DROPBOX_CREDENTIAL] = credentialJson
         }
     }
 
-    suspend fun saveGdriveFolderUrl(url: String) {
+    suspend fun saveDropboxAccount(email: String) {
         context.dataStore.edit { prefs ->
-            prefs[KEY_GDRIVE_FOLDER_URL] = url.trim()
+            prefs[KEY_DROPBOX_ACCOUNT] = email.trim()
         }
     }
 

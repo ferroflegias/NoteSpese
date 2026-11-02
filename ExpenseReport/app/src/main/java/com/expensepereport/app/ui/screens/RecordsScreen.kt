@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.AttachmentRepository
+import com.expensepereport.app.data.DropboxService
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
@@ -131,6 +132,7 @@ fun RecordsScreen(
         var newPdfUri by remember(spesa.id) { mutableStateOf<Uri?>(null) }
         var isUpdating by remember(spesa.id) { mutableStateOf(false) }
         var dialogError by remember(spesa.id) { mutableStateOf("") }
+        var isOpeningAttachment by remember(spesa.id) { mutableStateOf(false) }
 
         val imagePicker = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -195,28 +197,65 @@ fun RecordsScreen(
 
                     Text("📎 Allegato Corrente:", style = MaterialTheme.typography.titleSmall)
                     if (!spesa.allegatoPath.isNullOrBlank()) {
-                        val pathLower = spesa.allegatoPath.lowercase()
+                        val attachmentPath: String = spesa.allegatoPath
+                        val pathLower = attachmentPath.lowercase()
                         if (pathLower.startsWith("http://") || pathLower.startsWith("https://")) {
+                            // Attachments saved by older versions as Google Drive links
                             TextButton(onClick = {
                                 try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spesa.allegatoPath))
+                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(attachmentPath))
                                     context.startActivity(intent)
                                 } catch (e: Exception) {
                                     dialogError = "Impossibile aprire il link dell'allegato."
                                 }
                             }) {
-                                Text("📄 Visualizza Allegato in Google Drive / Web")
+                                Text("📄 Visualizza Allegato (link Web)")
                             }
-                        } else if (pathLower.endsWith(".pdf")) {
-                            Text("📄 PDF salvato sul dispositivo", style = MaterialTheme.typography.bodySmall)
                         } else {
-                            Image(
-                                painter = rememberAsyncImagePainter(spesa.allegatoPath),
-                                contentDescription = "Foto allegato",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(150.dp)
+                            val isDropbox = DropboxService.isDropboxPath(attachmentPath)
+                            if (!isDropbox && !pathLower.endsWith(".pdf")) {
+                                Image(
+                                    painter = rememberAsyncImagePainter(attachmentPath),
+                                    contentDescription = "Foto allegato",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(150.dp)
+                                )
+                            }
+                            Text(
+                                if (isDropbox) "☁️ Salvato su Dropbox" else "📱 Salvato sul dispositivo",
+                                style = MaterialTheme.typography.bodySmall
                             )
+                            TextButton(
+                                enabled = !isOpeningAttachment,
+                                onClick = {
+                                    scope.launch {
+                                        isOpeningAttachment = true
+                                        val viewUri = attachmentRepository.getViewableUri(attachmentPath)
+                                        isOpeningAttachment = false
+                                        if (viewUri == null) {
+                                            dialogError = if (isDropbox) {
+                                                "Impossibile scaricare l'allegato da Dropbox: verifica la connessione e che Dropbox sia collegato nelle Impostazioni."
+                                            } else {
+                                                "File allegato non trovato sul dispositivo."
+                                            }
+                                            return@launch
+                                        }
+                                        val mime = if (pathLower.endsWith(".pdf")) "application/pdf" else "image/*"
+                                        try {
+                                            val intent = Intent(Intent.ACTION_VIEW).apply {
+                                                setDataAndType(viewUri, mime)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            context.startActivity(intent)
+                                        } catch (e: Exception) {
+                                            dialogError = "Nessuna app disponibile per aprire l'allegato."
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(if (isOpeningAttachment) "⏳ Apertura in corso..." else "📄 Apri Allegato")
+                            }
                         }
                     } else {
                         Text("Nessun allegato salvato per questa spesa.", style = MaterialTheme.typography.bodySmall)

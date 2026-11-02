@@ -47,10 +47,18 @@ jobs:
             echo "::error::Keystore non leggibile: controlla che RELEASE_KEYSTORE_BASE64 sia il keystore corretto e che RELEASE_STORE_PASSWORD e RELEASE_KEY_ALIAS siano giusti."
             exit 1
           fi
-          keytool -list -v -keystore "$RUNNER_TEMP/release.keystore" -storepass "$RELEASE_STORE_PASSWORD" -alias "$RELEASE_KEY_ALIAS" | grep -E "SHA1:|SHA256:"
+
+      - name: Check Dropbox App key
+        env:
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY || vars.DROPBOX_APP_KEY }}
+        run: |
+          if [ -z "$DROPBOX_APP_KEY" ]; then
+            echo "::warning::DROPBOX_APP_KEY non impostata (Settings > Secrets and variables > Actions): l'APK funzionerà ma non potrà collegarsi a Dropbox."
+          fi
 
       - name: Build release APK
         env:
+          DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY || vars.DROPBOX_APP_KEY }}
           RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
