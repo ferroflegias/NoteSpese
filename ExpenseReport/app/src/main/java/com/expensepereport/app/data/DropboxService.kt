@@ -10,6 +10,7 @@ import com.dropbox.core.v2.files.ListFolderErrorException
 import com.dropbox.core.v2.files.WriteMode
 import com.expensepereport.app.BuildConfig
 import com.expensepereport.app.util.fileTimestamp
+import com.expensepereport.app.util.sanitizeDeviceName
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -23,8 +24,13 @@ data class BackupEntry(
     val name: String,
     val path: String,
     val sizeBytes: Long,
-    val modified: Date?
-)
+    val modified: Date?,
+    /** True for the safety copies taken automatically before a restore. */
+    val isSafetyBackup: Boolean = false
+) {
+    /** Device that created the backup, read from the file name (null for older backups). */
+    val deviceName: String? get() = DropboxService.deviceFromBackupName(name)
+}
 
 /**
  * Stores attachments and database backups in the app's own folder on Dropbox
@@ -38,6 +44,13 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
         private const val PATH_PREFIX = "dropbox:"
         private const val ATTACHMENTS_FOLDER = "/Allegati"
         private const val BACKUPS_FOLDER = "/Backups"
+        /**
+         * Copies of the local data taken automatically before a restore. They live in their own
+         * folder so that they never look like "the latest backup" to the other devices.
+         */
+        private const val SAFETY_BACKUPS_FOLDER = "/Backups_PreRipristino"
+        private const val BACKUP_FILE_PREFIX = "expense_report_backup_"
+        private val BACKUP_NAME_REGEX = Regex("^${BACKUP_FILE_PREFIX}\\d{8}_\\d{6}_(.+)\\.db$")
         private const val BACKUP_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
 
         private val SCOPES = listOf(
@@ -51,6 +64,13 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
 
         /** False when the APK was built without DROPBOX_APP_KEY. */
         val isConfigured: Boolean get() = appKey.isNotBlank()
+
+        /** Backup file name with timestamp and device, e.g. expense_report_backup_20260131_142500_Pixel-8.db */
+        fun backupFileName(timestamp: String, deviceName: String): String =
+            "$BACKUP_FILE_PREFIX${timestamp}_${sanitizeDeviceName(deviceName)}.db"
+
+        fun deviceFromBackupName(name: String): String? =
+            BACKUP_NAME_REGEX.find(name)?.groupValues?.get(1)
 
         fun isDropboxPath(path: String?): Boolean = path?.startsWith(PATH_PREFIX) == true
 
@@ -127,12 +147,26 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
         }
     }
 
-    suspend fun uploadDatabaseBackup(dbFile: File): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Uploads a backup of [dbFile] to the "Backups" folder. On success the data on this device
+     * is marked as saved ([AppSettingsRepository.markSynced]).
+     */
+    suspend fun uploadDatabaseBackup(dbFile: File): Boolean {
+        val startedAt = System.currentTimeMillis()
+        val success = uploadBackupTo(BACKUPS_FOLDER, dbFile)
+        if (success) settingsRepository.markSynced(startedAt)
+        return success
+    }
+
+    /** Uploads a safety copy of the local data before it is replaced by a restore. */
+    suspend fun uploadSafetyBackup(dbFile: File): Boolean = uploadBackupTo(SAFETY_BACKUPS_FOLDER, dbFile)
+
+    private suspend fun uploadBackupTo(folder: String, dbFile: File): Boolean = withContext(Dispatchers.IO) {
         val client = client() ?: return@withContext false
         try {
-            val path = "$BACKUPS_FOLDER/expense_report_backup_${fileTimestamp()}.db"
+            val path = "$folder/${backupFileName(fileTimestamp(), settingsRepository.deviceName())}"
             dbFile.inputStream().use { input -> upload(client, path, input) }
-            cleanupOldBackups(client)
+            cleanupOldBackups(client, folder)
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -147,10 +181,10 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
             .withAutorename(true)
             .uploadAndFinish(input)
 
-    private fun listBackupFiles(client: DbxClientV2): List<FileMetadata> {
+    private fun listBackupFiles(client: DbxClientV2, folder: String): List<FileMetadata> {
         val files = mutableListOf<FileMetadata>()
         try {
-            var result = client.files().listFolder(BACKUPS_FOLDER)
+            var result = client.files().listFolder(folder)
             while (true) {
                 files += result.entries.filterIsInstance<FileMetadata>()
                 if (!result.hasMore) break
@@ -163,10 +197,10 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
         return files
     }
 
-    private fun cleanupOldBackups(client: DbxClientV2) {
+    private fun cleanupOldBackups(client: DbxClientV2, folder: String) {
         try {
             val threshold = System.currentTimeMillis() - BACKUP_RETENTION_MS
-            listBackupFiles(client)
+            listBackupFiles(client, folder)
                 .filter { it.serverModified.time < threshold }
                 .forEach { file ->
                     val path = file.pathLower ?: return@forEach
@@ -181,16 +215,17 @@ class DropboxService(private val settingsRepository: AppSettingsRepository) {
         }
     }
 
-    /** Backups sorted from the newest. */
+    /** Backups sorted from the newest: regular backups first, then the safety copies. */
     suspend fun listBackups(): List<BackupEntry> = withContext(Dispatchers.IO) {
         val client = client() ?: return@withContext emptyList()
         try {
-            listBackupFiles(client)
+            fun entries(folder: String, isSafety: Boolean) = listBackupFiles(client, folder)
                 .sortedByDescending { it.serverModified }
                 .mapNotNull { file ->
                     val path = file.pathLower ?: return@mapNotNull null
-                    BackupEntry(file.name, path, file.size, file.serverModified)
+                    BackupEntry(file.name, path, file.size, file.serverModified, isSafety)
                 }
+            entries(BACKUPS_FOLDER, isSafety = false) + entries(SAFETY_BACKUPS_FOLDER, isSafety = true)
         } catch (e: Exception) {
             e.printStackTrace()
             emptyList()

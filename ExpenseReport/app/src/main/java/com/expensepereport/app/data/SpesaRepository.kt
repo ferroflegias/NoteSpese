@@ -18,6 +18,7 @@ import java.util.Locale
 class SpesaRepository(private val context: Context) {
     private val db: AppDatabase = AppDatabase.getDatabase(context)
     private val spesaDao: SpesaDao = db.spesaDao()
+    private val settingsRepository = AppSettingsRepository(context)
 
     suspend fun getSpese(): List<Spesa> = withContext(Dispatchers.IO) {
         spesaDao.getAllSpese().map { it.toSpesa() }
@@ -36,16 +37,19 @@ class SpesaRepository(private val context: Context) {
     suspend fun insertSpesa(spesa: Spesa): Long = withContext(Dispatchers.IO) {
         val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
         spesaDao.insert(SpesaEntity.fromSpesa(spesa.copy(id = null, createdAt = nowStr)))
+            .also { settingsRepository.markLocalChange() }
     }
 
     /** Saves the changes to an existing expense (identified by [Spesa.id]). */
     suspend fun updateSpesa(spesa: Spesa) = withContext(Dispatchers.IO) {
         require(spesa.id != null) { "Spesa senza id" }
         spesaDao.update(SpesaEntity.fromSpesa(spesa))
+        settingsRepository.markLocalChange()
     }
 
     suspend fun deleteSpesa(id: Long) = withContext(Dispatchers.IO) {
         spesaDao.deleteById(id)
+        settingsRepository.markLocalChange()
     }
 
     private fun getDatabaseFile(): File = context.getDatabasePath(AppDatabase.DATABASE_NAME)
@@ -168,7 +172,9 @@ class SpesaRepository(private val context: Context) {
             if (copied == null || tempFile.length() == 0L) {
                 return@withContext ImportResult.INVALID_FILE
             }
-            importFromFile(tempFile)
+            importFromFile(tempFile).also {
+                if (it == ImportResult.SUCCESS) settingsRepository.markLocalChange()
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             ImportResult.INVALID_FILE

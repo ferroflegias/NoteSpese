@@ -27,3 +27,12 @@ fun formatAmount(value: Double): String = String.format(Locale.US, "%.2f", value
 
 /** Timestamp used in the names of uploaded attachments and backups, e.g. 20260131_142500. */
 fun fileTimestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+
+/** Keeps only letters, digits and dashes so that a device name is safe inside a file name. */
+fun sanitizeDeviceName(name: String): String =
+    name.trim()
+        .replace(Regex("[^A-Za-z0-9]+"), "-")
+        .trim('-')
+        .take(30)
+        .trim('-')
+        .ifBlank { "Dispositivo" }
