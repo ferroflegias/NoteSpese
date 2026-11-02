@@ -1,6 +1,5 @@
 package com.expensepereport.app.ui.screens
 
-import android.content.Context
 import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,6 +11,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.expensepereport.app.data.AppSettingsRepository
+import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.util.DocumentGenerator
 import com.expensepereport.app.util.lastExcelError
@@ -24,17 +24,19 @@ import java.util.Calendar
 @Composable
 fun ExportScreen(
     spesaRepository: SpesaRepository,
-    settingsRepository: AppSettingsRepository
+    settingsRepository: AppSettingsRepository,
+    attachmentRepository: AttachmentRepository
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var yearInput by remember { mutableStateOf(2026) }
-    var pdfMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1) }
+    val currentMonth = remember { Calendar.getInstance().get(Calendar.MONTH) + 1 }
+    var yearInput by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
+    var pdfMonth by remember { mutableStateOf(currentMonth) }
 
     var excelMode by remember { mutableStateOf("Mese Singolo") }
-    var excelMonthStart by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1) }
-    var excelMonthEnd by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1) }
+    var excelMonthStart by remember { mutableStateOf(currentMonth) }
+    var excelMonthEnd by remember { mutableStateOf(currentMonth) }
 
     var isGeneratingExcel by remember { mutableStateOf(false) }
     var isGeneratingPdf by remember { mutableStateOf(false) }
@@ -132,8 +134,12 @@ fun ExportScreen(
                             "Range Mesi" -> "range"
                             else -> "singolo"
                         }
-                        val mStart = if (modeCode == "anno") 1 else excelMonthStart
-                        val mEnd = if (modeCode == "anno") 12 else if (modeCode == "range") excelMonthEnd else excelMonthStart
+                        // A range selected "backwards" (end before start) would export nothing
+                        val (mStart, mEnd) = when (modeCode) {
+                            "anno" -> 1 to 12
+                            "range" -> minOf(excelMonthStart, excelMonthEnd) to maxOf(excelMonthStart, excelMonthEnd)
+                            else -> excelMonthStart to excelMonthStart
+                        }
 
                         val excelFile = withContext(Dispatchers.IO) {
                             DocumentGenerator.generateExcel(
@@ -188,7 +194,8 @@ fun ExportScreen(
                             context = context,
                             spesaRepository = spesaRepository,
                             year = yearInput,
-                            month = pdfMonth
+                            month = pdfMonth,
+                            readAttachment = attachmentRepository::readAttachmentBytes
                         )
                     }
                     isGeneratingPdf = false

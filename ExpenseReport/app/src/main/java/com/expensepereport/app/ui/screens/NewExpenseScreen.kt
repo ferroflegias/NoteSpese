@@ -18,26 +18,74 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
-import com.expensepereport.app.data.AppSettingsRepository
-import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
+import com.expensepereport.app.util.formatAmount
+import com.expensepereport.app.util.isValidIsoDate
+import com.expensepereport.app.util.parseAmount
+import com.expensepereport.app.util.todayIsoDate
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.InputStream
-import java.text.SimpleDateFormat
-import java.util.*
+
+private const val CATEGORY_RISTORANTI = "🍴🛌🏻🍺"
+private const val CATEGORY_PARCHEGGI = "🅿️🚕✈️🚅"
+private const val CATEGORY_CARBURANTE = "⛽"
+private const val CATEGORY_TELEPASS = "🛣️"
+private const val CATEGORY_NOLO = "Nolo 🚗"
+private const val CATEGORY_ALTRO = "Altro"
+
+private const val PAYMENT_CC = "💳"
+private const val PAYMENT_CASH = "💰"
+private const val PAYMENT_FUEL_CARD = "💳⛽"
+
+private val CATEGORY_OPTIONS = listOf(
+    CATEGORY_RISTORANTI, CATEGORY_PARCHEGGI, CATEGORY_CARBURANTE,
+    CATEGORY_TELEPASS, CATEGORY_NOLO, CATEGORY_ALTRO
+)
+private val PAYMENT_OPTIONS = listOf(PAYMENT_CC, PAYMENT_CASH, PAYMENT_FUEL_CARD)
+
+/** Maps the category suggested by the OCR to the chip shown in the UI. */
+private fun categoryFromOcr(suggestion: String): String = when (suggestion) {
+    "Bar/Rist/Alb" -> CATEGORY_RISTORANTI
+    "Parcheggio/Taxi" -> CATEGORY_PARCHEGGI
+    "Carburante" -> CATEGORY_CARBURANTE
+    "Telepass" -> CATEGORY_TELEPASS
+    "Nolo" -> CATEGORY_NOLO
+    else -> CATEGORY_ALTRO
+}
+
+private fun paymentFromOcr(suggestion: String): String = when (suggestion) {
+    "Contanti" -> PAYMENT_CASH
+    "Carta Carburante" -> PAYMENT_FUEL_CARD
+    else -> PAYMENT_CC
+}
+
+/** Database category key, matching the columns of the Excel template. */
+private fun categoryKey(category: String, payment: String): String = when (category) {
+    CATEGORY_RISTORANTI -> if (payment == PAYMENT_CC) "RISTORANTI_CC" else "RISTORANTI_CONTANTI"
+    CATEGORY_PARCHEGGI -> if (payment == PAYMENT_CC) "PARCHEGGI_CC" else "PARCHEGGI_CONTANTI"
+    CATEGORY_CARBURANTE -> if (payment == PAYMENT_FUEL_CARD) "CARBURANTE_CARTA" else "CARBURANTE_CC"
+    CATEGORY_TELEPASS -> "TELEPASS"
+    CATEGORY_NOLO -> "NOLO"
+    else -> "ALTRO"
+}
+
+private fun paymentLabel(category: String, payment: String): String? =
+    if (category == CATEGORY_TELEPASS) null else when (payment) {
+        PAYMENT_CC -> "CC (Carta)"
+        PAYMENT_CASH -> "Contanti"
+        else -> "Carta Carburante"
+    }
 
 @Composable
 fun NewExpenseScreen(
     spesaRepository: SpesaRepository,
-    settingsRepository: AppSettingsRepository,
-    googleDriveService: GoogleDriveService
+    attachmentRepository: AttachmentRepository
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -54,21 +102,41 @@ fun NewExpenseScreen(
     var isAnalyzing by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
 
-    var dateInput by remember { mutableStateOf(SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date())) }
+    var dateInput by remember { mutableStateOf(todayIsoDate()) }
     var destInput by remember { mutableStateOf("") }
     var scopoInput by remember { mutableStateOf("") }
 
-    val categoryOptions = listOf("🍴🛌🏻🍺", "🅿️🚕✈️🚅", "⛽", "🛣️", "Nolo 🚗", "Altro")
-    var selectedCategory by remember { mutableStateOf("🍴🛌🏻🍺") }
-
-    val paymentOptions = listOf("💳", "💰", "💳⛽")
-    var selectedPayment by remember { mutableStateOf("💳") }
+    var selectedCategory by remember { mutableStateOf(CATEGORY_RISTORANTI) }
+    var selectedPayment by remember { mutableStateOf(PAYMENT_CC) }
 
     var amountInput by remember { mutableStateOf("") }
     var isForeignCurrency by remember { mutableStateOf(false) }
     var noteInput by remember { mutableStateOf("") }
 
     var statusMessage by remember { mutableStateOf("") }
+
+    fun runOcr(uri: Uri, isPdf: Boolean) {
+        scope.launch {
+            isAnalyzing = true
+            val ocrRes = try {
+                withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf) }
+            } finally {
+                isAnalyzing = false
+            }
+            val source = if (isPdf) "nel PDF" else "nella foto"
+            if (ocrRes != null) {
+                dateInput = ocrRes.dataStr
+                destInput = ocrRes.destinazione
+                if (ocrRes.importo > 0) amountInput = formatAmount(ocrRes.importo)
+                selectedCategory = categoryFromOcr(ocrRes.categoriaSuggerita)
+                selectedPayment = paymentFromOcr(ocrRes.pagamentoSuggerito)
+                noteInput = ocrRes.noteExtracted
+                statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit!"
+            } else {
+                statusMessage = "⚠️ Nessun testo rilevato $source."
+            }
+        }
+    }
 
     fun startCropFlow(sourceUri: Uri) {
         cropSourceUri = sourceUri
@@ -85,10 +153,7 @@ fun NewExpenseScreen(
 
     fun createTempImageUri(): Uri? {
         return try {
-            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir).apply {
-                createNewFile()
-                deleteOnExit()
-            }
+            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir)
             FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -99,8 +164,9 @@ fun NewExpenseScreen(
     val cameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success: Boolean ->
-        if (success && cameraTempUri != null) {
-            cameraTempUri?.let { uri -> startCropFlow(uri) }
+        val uri = cameraTempUri
+        if (success && uri != null) {
+            startCropFlow(uri)
         }
     }
 
@@ -184,39 +250,7 @@ fun NewExpenseScreen(
             }
             Spacer(modifier = Modifier.height(8.dp))
             Button(
-                onClick = {
-                    scope.launch {
-                        isAnalyzing = true
-                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf = false) }
-                        isAnalyzing = false
-                        if (ocrRes != null) {
-                            dateInput = ocrRes.dataStr
-                            destInput = ocrRes.destinazione
-                            amountInput = String.format(Locale.US, "%.2f", ocrRes.importo)
-
-                            selectedCategory = when (ocrRes.categoriaSuggerita) {
-                                "Bar/Rist/Alb" -> "🍴🛌🏻🍺"
-                                "Parcheggio/Taxi" -> "🅿️🚕✈️🚅"
-                                "Carburante" -> "⛽"
-                                "Telepass" -> "🛣️"
-                                "Nolo" -> "Nolo 🚗"
-                                else -> "Altro"
-                            }
-
-                            selectedPayment = when (ocrRes.pagamentoSuggerito) {
-                                "CC" -> "💳"
-                                "Contanti" -> "💰"
-                                "Carta Carburante" -> "💳⛽"
-                                else -> "💳"
-                            }
-
-                            noteInput = ocrRes.noteExtracted
-                            statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit!"
-                        } else {
-                            statusMessage = "⚠️ Nessun testo rilevato nella foto."
-                        }
-                    }
-                },
+                onClick = { runOcr(uri, isPdf = false) },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !isAnalyzing
             ) {
@@ -229,39 +263,7 @@ fun NewExpenseScreen(
             Text("📄 PDF Selezionato: $uri", style = MaterialTheme.typography.bodyMedium)
             Spacer(modifier = Modifier.height(8.dp))
             Button(
-                onClick = {
-                    scope.launch {
-                        isAnalyzing = true
-                        val ocrRes = withContext(Dispatchers.IO) { OcrAnalyzer.analyzeReceipt(context, uri, isPdf = true) }
-                        isAnalyzing = false
-                        if (ocrRes != null) {
-                            dateInput = ocrRes.dataStr
-                            destInput = ocrRes.destinazione
-                            amountInput = String.format(Locale.US, "%.2f", ocrRes.importo)
-
-                            selectedCategory = when (ocrRes.categoriaSuggerita) {
-                                "Bar/Rist/Alb" -> "🍴🛌🏻🍺"
-                                "Parcheggio/Taxi" -> "🅿️🚕✈️🚅"
-                                "Carburante" -> "⛽"
-                                "Telepass" -> "🛣️"
-                                "Nolo" -> "Nolo 🚗"
-                                else -> "Altro"
-                            }
-
-                            selectedPayment = when (ocrRes.pagamentoSuggerito) {
-                                "CC" -> "💳"
-                                "Contanti" -> "💰"
-                                "Carta Carburante" -> "💳⛽"
-                                else -> "💳"
-                            }
-
-                            noteInput = ocrRes.noteExtracted
-                            statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit dal PDF!"
-                        } else {
-                            statusMessage = "⚠️ Nessun testo rilevato nel PDF."
-                        }
-                    }
-                },
+                onClick = { runOcr(uri, isPdf = true) },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = !isAnalyzing
             ) {
@@ -299,7 +301,7 @@ fun NewExpenseScreen(
 
         Text("Categoria:", style = MaterialTheme.typography.bodyMedium)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            categoryOptions.take(3).forEach { cat ->
+            CATEGORY_OPTIONS.take(3).forEach { cat ->
                 FilterChip(
                     selected = selectedCategory == cat,
                     onClick = { selectedCategory = cat },
@@ -308,7 +310,7 @@ fun NewExpenseScreen(
             }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            categoryOptions.drop(3).forEach { cat ->
+            CATEGORY_OPTIONS.drop(3).forEach { cat ->
                 FilterChip(
                     selected = selectedCategory == cat,
                     onClick = { selectedCategory = cat },
@@ -317,11 +319,11 @@ fun NewExpenseScreen(
             }
         }
 
-        if (selectedCategory != "🛣️") {
+        if (selectedCategory != CATEGORY_TELEPASS) {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Metodo Pagamento:", style = MaterialTheme.typography.bodyMedium)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                paymentOptions.forEach { pay ->
+                PAYMENT_OPTIONS.forEach { pay ->
                     FilterChip(
                         selected = selectedPayment == pay,
                         onClick = { selectedPayment = pay },
@@ -365,92 +367,55 @@ fun NewExpenseScreen(
         Button(
             onClick = {
                 scope.launch {
-                    val doubleAmount = amountInput.replace(",", ".").toDoubleOrNull() ?: 0.0
-                    if (doubleAmount <= 0.0 && selectedCategory != "🛣️") {
+                    if (!isValidIsoDate(dateInput)) {
+                        statusMessage = "⚠️ Data non valida! Usa il formato AAAA-MM-GG."
+                        return@launch
+                    }
+                    val doubleAmount = parseAmount(amountInput) ?: 0.0
+                    if (doubleAmount <= 0.0 && selectedCategory != CATEGORY_TELEPASS) {
                         statusMessage = "⚠️ Inserisci un importo valido!"
                         return@launch
                     }
 
                     isSaving = true
+                    try {
+                        val currentUri = imageUri ?: pdfUri
+                        val attachmentUrl = currentUri?.let {
+                            attachmentRepository.saveAttachment(it, isPdf = pdfUri != null, dataSpesa = dateInput)
+                        }
 
-                    val catKey = when (selectedCategory) {
-                        "🍴🛌🏻🍺" -> if (selectedPayment == "💳") "RISTORANTI_CC" else "RISTORANTI_CONTANTI"
-                        "🅿️🚕✈️🚅" -> if (selectedPayment == "💳") "PARCHEGGI_CC" else "PARCHEGGI_CONTANTI"
-                        "⛽" -> if (selectedPayment == "💳⛽") "CARBURANTE_CARTA" else "CARBURANTE_CC"
-                        "🛣️" -> "TELEPASS"
-                        "Nolo 🚗" -> "NOLO"
-                        else -> "ALTRO"
-                    }
+                        val spesaInsert = SpesaInsert(
+                            data = dateInput,
+                            destinazione = destInput.ifBlank { null },
+                            scopo = scopoInput.ifBlank { null },
+                            categoria = categoryKey(selectedCategory, selectedPayment),
+                            metodoPagamento = paymentLabel(selectedCategory, selectedPayment),
+                            importo = doubleAmount,
+                            note = noteInput.ifBlank { null },
+                            allegatoPath = attachmentUrl,
+                            valutaStraniera = if (isForeignCurrency) 1 else 0
+                        )
 
-                    val metodoStr = if (selectedCategory == "🛣️") null else when (selectedPayment) {
-                        "💳" -> "CC (Carta)"
-                        "💰" -> "Contanti"
-                        else -> "Carta Carburante"
-                    }
+                        spesaRepository.insertSpesa(spesaInsert)
 
-                    var attachmentUrl: String? = null
-                    val currentUri = imageUri ?: pdfUri
-
-                    if (currentUri != null) {
-                        val savedEmail = settingsRepository.googleAccountEmailFlow.first()
-                        val accountEmail = if (savedEmail.isNotBlank()) {
-                            savedEmail
+                        statusMessage = if (currentUri != null && attachmentUrl == null) {
+                            "⚠️ Spesa registrata, ma non è stato possibile salvare l'allegato."
                         } else {
-                            GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
+                            "🎉 Spesa registrata con successo nel database!"
                         }
-
-                        try {
-                            val inputStream: InputStream? = context.contentResolver.openInputStream(currentUri)
-                            val fileBytes = inputStream?.readBytes()
-                            if (fileBytes != null) {
-                                val ext = if (pdfUri != null) "pdf" else "jpg"
-                                val mime = if (pdfUri != null) "application/pdf" else "image/jpeg"
-
-                                if (accountEmail.isNotBlank()) {
-                                    attachmentUrl = googleDriveService.uploadAttachment(
-                                        accountName = accountEmail,
-                                        fileBytes = fileBytes,
-                                        dataSpesa = dateInput,
-                                        extension = ext,
-                                        contentType = mime
-                                    )
-                                } else {
-                                    val year = if (dateInput.length >= 4) dateInput.substring(0, 4) else "2026"
-                                    val month = if (dateInput.length >= 7) dateInput.substring(5, 7) else "01"
-                                    val localFolder = File(context.filesDir, "NoteSpese_Allegati/$year/$month")
-                                    localFolder.mkdirs()
-                                    val file = File(localFolder, "rec_${dateInput}_${System.currentTimeMillis()}.$ext")
-                                    file.writeBytes(fileBytes)
-                                    attachmentUrl = file.absolutePath
-                                }
-                            }
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
+                        destInput = ""
+                        scopoInput = ""
+                        amountInput = ""
+                        noteInput = ""
+                        isForeignCurrency = false
+                        imageUri = null
+                        pdfUri = null
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        statusMessage = "❌ Errore durante il salvataggio: ${e.localizedMessage ?: e.message}"
+                    } finally {
+                        isSaving = false
                     }
-
-                    val spesaInsert = SpesaInsert(
-                        data = dateInput,
-                        destinazione = destInput.ifBlank { null },
-                        scopo = scopoInput.ifBlank { null },
-                        categoria = catKey,
-                        metodoPagamento = metodoStr,
-                        importo = doubleAmount,
-                        note = noteInput.ifBlank { null },
-                        allegatoPath = attachmentUrl,
-                        valutaStraniera = if (isForeignCurrency) 1 else 0
-                    )
-
-                    spesaRepository.insertSpesa(spesaInsert)
-
-                    isSaving = false
-                    statusMessage = "🎉 Spesa registrata con successo nel database!"
-                    destInput = ""
-                    scopoInput = ""
-                    amountInput = ""
-                    noteInput = ""
-                    imageUri = null
-                    pdfUri = null
                 }
             },
             modifier = Modifier.fillMaxWidth(),

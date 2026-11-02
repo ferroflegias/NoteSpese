@@ -1,13 +1,9 @@
 package com.expensepereport.app.data.room
 
 import androidx.room.*
-import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface SpesaDao {
-    @Query("SELECT * FROM spese ORDER BY data DESC, id DESC")
-    fun getAllSpeseFlow(): Flow<List<SpesaEntity>>
-
     @Query("SELECT * FROM spese ORDER BY data DESC, id DESC")
     suspend fun getAllSpese(): List<SpesaEntity>
 
@@ -31,4 +27,11 @@ interface SpesaDao {
 
     @Query("DELETE FROM spese")
     suspend fun deleteAll()
+
+    /** Atomically replaces the whole table: if the insert fails the old data is kept. */
+    @Transaction
+    suspend fun replaceAll(spese: List<SpesaEntity>) {
+        deleteAll()
+        insertAll(spese)
+    }
 }

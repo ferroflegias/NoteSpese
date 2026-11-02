@@ -11,34 +11,27 @@ import androidx.compose.ui.unit.dp
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.util.DocumentGenerator
-import kotlinx.coroutines.launch
+import com.expensepereport.app.util.formatAmount
 import java.util.Calendar
-import java.util.Locale
 
 @Composable
 fun ReportsScreen(spesaRepository: SpesaRepository) {
-    val scope = rememberCoroutineScope()
-
-    var selectedYear by remember { mutableStateOf(2026) }
+    var selectedYear by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
     var selectedMonth by remember { mutableStateOf(Calendar.getInstance().get(Calendar.MONTH) + 1) }
 
     var monthSpese by remember { mutableStateOf<List<Spesa>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
 
-    fun loadMonthData() {
-        scope.launch {
-            isLoading = true
-            try {
-                monthSpese = spesaRepository.getSpeseForMonth(selectedYear, selectedMonth)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+    // Loading inside the effect cancels a stale query when year/month change again
+    LaunchedEffect(selectedYear, selectedMonth) {
+        isLoading = true
+        try {
+            monthSpese = spesaRepository.getSpeseForMonth(selectedYear, selectedMonth)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
             isLoading = false
         }
-    }
-
-    LaunchedEffect(selectedYear, selectedMonth) {
-        loadMonthData()
     }
 
     val totaleMese = monthSpese.sumOf { it.importo }
@@ -104,16 +97,16 @@ fun ReportsScreen(spesaRepository: SpesaRepository) {
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text("Totale Generale Mese:", style = MaterialTheme.typography.titleMedium)
-                    Text("€ ${String.format(Locale.US, "%.2f", totaleMese)}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
+                    Text("€ ${formatAmount(totaleMese)}", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
 
                     Spacer(modifier = Modifier.height(12.dp))
                     HorizontalDivider()
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    Text("1) Totale CC (💳 Carta): € ${String.format(Locale.US, "%.2f", totaleCC)}", style = MaterialTheme.typography.bodyLarge)
-                    Text("2) Totale Cash (💰 Contanti): € ${String.format(Locale.US, "%.2f", totaleCash)}", style = MaterialTheme.typography.bodyLarge)
-                    Text("3) Totale Carta Carburante (💳⛽): € ${String.format(Locale.US, "%.2f", totaleCartaCarburante)}", style = MaterialTheme.typography.bodyLarge)
-                    Text("4) Totale Telepass (🛣️): € ${String.format(Locale.US, "%.2f", totaleTelepass)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("1) Totale CC (💳 Carta): € ${formatAmount(totaleCC)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("2) Totale Cash (💰 Contanti): € ${formatAmount(totaleCash)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("3) Totale Carta Carburante (💳⛽): € ${formatAmount(totaleCartaCarburante)}", style = MaterialTheme.typography.bodyLarge)
+                    Text("4) Totale Telepass (🛣️): € ${formatAmount(totaleTelepass)}", style = MaterialTheme.typography.bodyLarge)
                 }
             }
 
@@ -130,7 +123,7 @@ fun ReportsScreen(spesaRepository: SpesaRepository) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(cat)
-                    Text("€ ${String.format(Locale.US, "%.2f", sum)} (${list.size})")
+                    Text("€ ${formatAmount(sum)} (${list.size})")
                 }
             }
         }

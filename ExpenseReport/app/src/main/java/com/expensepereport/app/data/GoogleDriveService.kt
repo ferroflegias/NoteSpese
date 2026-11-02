@@ -14,6 +14,7 @@ import com.google.api.services.drive.DriveScopes
 import com.google.api.services.drive.model.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Collections
@@ -58,10 +59,6 @@ class GoogleDriveService(private val context: Context) {
         )
             .setApplicationName("PerExpenseReport")
             .build()
-    }
-
-    private fun getDriveService(account: GoogleSignInAccount): Drive {
-        return getDriveServiceForAccountName(account.email ?: account.account?.name ?: "")
     }
 
     private fun getOrCreateFolder(drive: Drive, folderName: String, parentFolderId: String? = null): String {
@@ -132,16 +129,6 @@ class GoogleDriveService(private val context: Context) {
         }
     }
 
-    suspend fun uploadAttachment(
-        account: GoogleSignInAccount,
-        fileBytes: ByteArray,
-        dataSpesa: String,
-        extension: String,
-        contentType: String
-    ): String? {
-        return uploadAttachment(account.email ?: "", fileBytes, dataSpesa, extension, contentType)
-    }
-
     suspend fun uploadDatabaseBackup(
         accountName: String,
         dbFile: java.io.File
@@ -170,13 +157,6 @@ class GoogleDriveService(private val context: Context) {
             e.printStackTrace()
             false
         }
-    }
-
-    suspend fun uploadDatabaseBackup(
-        account: GoogleSignInAccount,
-        dbFile: java.io.File
-    ): Boolean {
-        return uploadDatabaseBackup(account.email ?: "", dbFile)
     }
 
     private fun cleanupOldBackups(drive: Drive, backupFolderId: String) {
@@ -230,14 +210,32 @@ class GoogleDriveService(private val context: Context) {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             val drive = getDriveServiceForAccountName(accountName)
-            val outputStream = FileOutputStream(targetFile)
-            drive.files().get(fileId).executeMediaAndDownloadTo(outputStream)
-            outputStream.flush()
-            outputStream.close()
+            FileOutputStream(targetFile).use { outputStream ->
+                drive.files().get(fileId).executeMediaAndDownloadTo(outputStream)
+            }
             true
         } catch (e: Exception) {
             e.printStackTrace()
             false
+        }
+    }
+
+    /**
+     * Downloads the content of a Drive file. Attachments are stored as webViewLink URLs,
+     * which point to an HTML viewer page and cannot be downloaded without authentication.
+     */
+    suspend fun downloadFileBytes(accountName: String, fileIdOrUrl: String): ByteArray? = withContext(Dispatchers.IO) {
+        if (accountName.isBlank()) return@withContext null
+        val fileId = extractGoogleDriveFileId(fileIdOrUrl) ?: return@withContext null
+        try {
+            val drive = getDriveServiceForAccountName(accountName)
+            ByteArrayOutputStream().use { outputStream ->
+                drive.files().get(fileId).executeMediaAndDownloadTo(outputStream)
+                outputStream.toByteArray()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
         }
     }
 
@@ -269,7 +267,7 @@ class GoogleDriveService(private val context: Context) {
             return@withContext false
         }
 
-        // Extract Google Drive File ID
+        if (accountName.isBlank()) return@withContext false
         val fileId = extractGoogleDriveFileId(fileIdOrUrl) ?: return@withContext false
 
         try {
@@ -287,24 +285,10 @@ class GoogleDriveService(private val context: Context) {
         if (!pathOrUrl.contains("/") && !pathOrUrl.contains("?")) {
             return pathOrUrl
         }
-        // Pattern for /file/d/{FILE_ID}
-        val patternFileD = Regex("/file/d/([a-zA-Z0-9_-]+)")
-        val matchFileD = patternFileD.find(pathOrUrl)
-        if (matchFileD != null) {
-            return matchFileD.groupValues[1]
-        }
-        // Pattern for ?id={FILE_ID} or &id={FILE_ID}
-        val patternId = Regex("[?&]id=([a-zA-Z0-9_-]+)")
-        val matchId = patternId.find(pathOrUrl)
-        if (matchId != null) {
-            return matchId.groupValues[1]
-        }
-        // Pattern for /d/{FILE_ID}
-        val patternD = Regex("/d/([a-zA-Z0-9_-]+)")
-        val matchD = patternD.find(pathOrUrl)
-        if (matchD != null) {
-            return matchD.groupValues[1]
-        }
+        // Matches both /file/d/{FILE_ID} and /d/{FILE_ID}
+        Regex("/d/([a-zA-Z0-9_-]+)").find(pathOrUrl)?.let { return it.groupValues[1] }
+        // Matches ?id={FILE_ID} or &id={FILE_ID}
+        Regex("[?&]id=([a-zA-Z0-9_-]+)").find(pathOrUrl)?.let { return it.groupValues[1] }
         return null
     }
 }

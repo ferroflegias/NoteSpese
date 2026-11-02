@@ -20,6 +20,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.common.api.ApiException
 import com.google.api.services.drive.model.File
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun SettingsScreen(
@@ -104,7 +105,7 @@ fun SettingsScreen(
     ) { uri: Uri? ->
         if (uri != null) {
             try {
-                val bytes = context.contentResolver.openInputStream(uri)?.readBytes()
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                 if (bytes != null) {
                     val success = settingsRepository.saveExcelTemplate(bytes)
                     if (success) {
@@ -261,7 +262,7 @@ fun SettingsScreen(
                             settingsRepository.saveBackupSettings(true, selectedHour, selectedMinute)
                         }
                     }) {
-                        Text(String.format("%02d", selectedHour))
+                        Text(String.format(Locale.US, "%02d", selectedHour))
                     }
                     Text(" : ")
                     OutlinedButton(onClick = {
@@ -270,7 +271,7 @@ fun SettingsScreen(
                             settingsRepository.saveBackupSettings(true, selectedHour, selectedMinute)
                         }
                     }) {
-                        Text(String.format("%02d", selectedMinute))
+                        Text(String.format(Locale.US, "%02d", selectedMinute))
                     }
                 }
             }
@@ -287,8 +288,13 @@ fun SettingsScreen(
                 scope.launch {
                     isPerformingAction = true
                     statusMessage = "Esecuzione backup manuale su Google Drive..."
-                    val dbFile = spesaRepository.getDatabaseFile()
-                    val success = googleDriveService.uploadDatabaseBackup(activeEmail, dbFile)
+                    val success = try {
+                        val dbFile = spesaRepository.getDatabaseFileForBackup()
+                        googleDriveService.uploadDatabaseBackup(activeEmail, dbFile)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        false
+                    }
                     isPerformingAction = false
                     if (success) {
                         statusMessage = "🎉 Backup salvato con successo nella cartella 'NoteSpese_Backups' su Google Drive!"
@@ -376,7 +382,8 @@ fun SettingsScreen(
             onDismissRequest = { showRestoreDialog = false },
             title = { Text("Seleziona Backup da Ripristinare") },
             text = {
-                Column {
+                // Up to 30 daily backups are kept: the list must scroll
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("⚠️ Il ripristino sovrascriverà i dati locali con il backup selezionato:")
                     Spacer(modifier = Modifier.height(8.dp))
                     availableBackups.forEach { file ->
@@ -387,15 +394,19 @@ fun SettingsScreen(
                                     isPerformingAction = true
                                     statusMessage = "Scaricamento e ripristino backup in corso..."
                                     val tempFile = java.io.File(context.cacheDir, "temp_restore.db")
-                                    val downloaded = googleDriveService.downloadBackup(activeEmail, file.id, tempFile)
-                                    if (downloaded) {
-                                        val restored = spesaRepository.restoreDatabaseFromFile(tempFile)
+                                    try {
+                                        val downloaded = googleDriveService.downloadBackup(activeEmail, file.id, tempFile)
+                                        statusMessage = if (!downloaded) {
+                                            "❌ Impossibile scaricare il file dal backup su GDrive."
+                                        } else if (spesaRepository.importFromFile(tempFile)) {
+                                            "🎉 Database ripristinato con successo!"
+                                        } else {
+                                            "❌ Errore durante il ripristino del database."
+                                        }
+                                    } finally {
                                         tempFile.delete()
-                                        statusMessage = if (restored) "🎉 Database ripristinato con successo!" else "❌ Errore durante il ripristino del database."
-                                    } else {
-                                        statusMessage = "❌ Impossibile scaricare il file dal backup su GDrive."
+                                        isPerformingAction = false
                                     }
-                                    isPerformingAction = false
                                 }
                             },
                             modifier = Modifier.fillMaxWidth()

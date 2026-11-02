@@ -18,23 +18,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.rememberAsyncImagePainter
-import com.expensepereport.app.data.AppSettingsRepository
-import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
+import com.expensepereport.app.util.formatAmount
+import com.expensepereport.app.util.isValidIsoDate
+import com.expensepereport.app.util.parseAmount
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.InputStream
-import java.util.Locale
 
 @Composable
 fun RecordsScreen(
     spesaRepository: SpesaRepository,
-    settingsRepository: AppSettingsRepository,
-    googleDriveService: GoogleDriveService
+    attachmentRepository: AttachmentRepository
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -49,10 +45,12 @@ fun RecordsScreen(
             isLoading = true
             try {
                 speseList = spesaRepository.getSpese()
+                statusMessage = ""
             } catch (e: Exception) {
                 statusMessage = "Errore caricamento spese: ${e.message}"
+            } finally {
+                isLoading = false
             }
-            isLoading = false
         }
     }
 
@@ -92,7 +90,7 @@ fun RecordsScreen(
             modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(speseList) { spesa ->
+            items(speseList, key = { it.id ?: 0L }) { spesa ->
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -105,7 +103,7 @@ fun RecordsScreen(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text("ID #${spesa.id ?: "-"} | ${spesa.data}", style = MaterialTheme.typography.titleMedium)
-                            Text("€ ${String.format(Locale.US, "%.2f", spesa.importo)}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+                            Text("€ ${formatAmount(spesa.importo)}", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
                         }
                         Text("Destinazione: ${spesa.destinazione ?: "-"}", style = MaterialTheme.typography.bodyMedium)
                         Text("Cat: ${spesa.categoria} | Pag: ${spesa.metodoPagamento ?: "Standard"}", style = MaterialTheme.typography.bodySmall)
@@ -123,15 +121,16 @@ fun RecordsScreen(
 
     // Edit Dialog
     selectedSpesa?.let { spesa ->
-        var editDate by remember { mutableStateOf(spesa.data) }
-        var editDest by remember { mutableStateOf(spesa.destinazione ?: "") }
-        var editScopo by remember { mutableStateOf(spesa.scopo ?: "") }
-        var editImporto by remember { mutableStateOf(spesa.importo.toString()) }
-        var editNote by remember { mutableStateOf(spesa.note ?: "") }
+        var editDate by remember(spesa.id) { mutableStateOf(spesa.data) }
+        var editDest by remember(spesa.id) { mutableStateOf(spesa.destinazione ?: "") }
+        var editScopo by remember(spesa.id) { mutableStateOf(spesa.scopo ?: "") }
+        var editImporto by remember(spesa.id) { mutableStateOf(formatAmount(spesa.importo)) }
+        var editNote by remember(spesa.id) { mutableStateOf(spesa.note ?: "") }
 
-        var newImageUri by remember { mutableStateOf<Uri?>(null) }
-        var newPdfUri by remember { mutableStateOf<Uri?>(null) }
-        var isUpdating by remember { mutableStateOf(false) }
+        var newImageUri by remember(spesa.id) { mutableStateOf<Uri?>(null) }
+        var newPdfUri by remember(spesa.id) { mutableStateOf<Uri?>(null) }
+        var isUpdating by remember(spesa.id) { mutableStateOf(false) }
+        var dialogError by remember(spesa.id) { mutableStateOf("") }
 
         val imagePicker = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -203,11 +202,13 @@ fun RecordsScreen(
                                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(spesa.allegatoPath))
                                     context.startActivity(intent)
                                 } catch (e: Exception) {
-                                    // Handle browser intent error
+                                    dialogError = "Impossibile aprire il link dell'allegato."
                                 }
                             }) {
                                 Text("📄 Visualizza Allegato in Google Drive / Web")
                             }
+                        } else if (pathLower.endsWith(".pdf")) {
+                            Text("📄 PDF salvato sul dispositivo", style = MaterialTheme.typography.bodySmall)
                         } else {
                             Image(
                                 painter = rememberAsyncImagePainter(spesa.allegatoPath),
@@ -247,49 +248,38 @@ fun RecordsScreen(
                     newPdfUri?.let {
                         Text("Nuovo PDF selezionato", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
                     }
+
+                    if (dialogError.isNotEmpty()) {
+                        Text(dialogError, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
+                        val id = spesa.id ?: return@Button
+                        if (!isValidIsoDate(editDate)) {
+                            dialogError = "⚠️ Data non valida! Usa il formato AAAA-MM-GG."
+                            return@Button
+                        }
+                        val importo = parseAmount(editImporto)
+                        if (importo == null) {
+                            dialogError = "⚠️ Importo non valido!"
+                            return@Button
+                        }
                         scope.launch {
                             isUpdating = true
-                            spesa.id?.let { id ->
+                            try {
                                 var finalAttachmentUrl = spesa.allegatoPath
                                 val newUri = newImageUri ?: newPdfUri
 
                                 if (newUri != null) {
-                                    val savedEmail = settingsRepository.googleAccountEmailFlow.first()
-                                    val accountEmail = if (savedEmail.isNotBlank()) {
-                                        savedEmail
-                                    } else {
-                                        GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
+                                    val savedUrl = attachmentRepository.saveAttachment(newUri, isPdf = newPdfUri != null, dataSpesa = editDate)
+                                    if (savedUrl == null) {
+                                        dialogError = "❌ Impossibile salvare il nuovo allegato."
+                                        return@launch
                                     }
-
-                                    try {
-                                        val inputStream: InputStream? = context.contentResolver.openInputStream(newUri)
-                                        val bytes = inputStream?.readBytes()
-                                        if (bytes != null) {
-                                            val ext = if (newPdfUri != null) "pdf" else "jpg"
-                                            val mime = if (newPdfUri != null) "application/pdf" else "image/jpeg"
-
-                                            if (accountEmail.isNotBlank()) {
-                                                finalAttachmentUrl = googleDriveService.uploadAttachment(
-                                                    accountName = accountEmail,
-                                                    fileBytes = bytes,
-                                                    dataSpesa = editDate,
-                                                    extension = ext,
-                                                    contentType = mime
-                                                )
-                                                // Delete old attachment if present
-                                                if (!spesa.allegatoPath.isNullOrBlank()) {
-                                                    googleDriveService.deleteFile(accountEmail, spesa.allegatoPath)
-                                                }
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                    }
+                                    finalAttachmentUrl = savedUrl
                                 }
 
                                 val updatedSpesa = SpesaInsert(
@@ -298,16 +288,27 @@ fun RecordsScreen(
                                     scopo = editScopo.ifBlank { null },
                                     categoria = spesa.categoria,
                                     metodoPagamento = spesa.metodoPagamento,
-                                    importo = editImporto.toDoubleOrNull() ?: spesa.importo,
+                                    importo = importo,
+                                    km = spesa.km,
                                     note = editNote.ifBlank { null },
                                     allegatoPath = finalAttachmentUrl,
                                     valutaStraniera = spesa.valutaStraniera
                                 )
                                 spesaRepository.updateSpesa(id, updatedSpesa)
+
+                                // Remove the old attachment only once the record points to the new one
+                                if (finalAttachmentUrl != spesa.allegatoPath) {
+                                    attachmentRepository.deleteAttachment(spesa.allegatoPath)
+                                }
+
                                 selectedSpesa = null
                                 refreshList()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                dialogError = "❌ Errore durante il salvataggio: ${e.localizedMessage ?: e.message}"
+                            } finally {
+                                isUpdating = false
                             }
-                            isUpdating = false
                         }
                     },
                     enabled = !isUpdating
@@ -318,26 +319,23 @@ fun RecordsScreen(
             dismissButton = {
                 TextButton(
                     onClick = {
+                        val id = spesa.id ?: return@TextButton
                         scope.launch {
-                            spesa.id?.let { id ->
-                                val oldAttachment = spesa.allegatoPath
-                                if (!oldAttachment.isNullOrBlank()) {
-                                    val savedEmail = settingsRepository.googleAccountEmailFlow.first()
-                                    val accountEmail = if (savedEmail.isNotBlank()) {
-                                        savedEmail
-                                    } else {
-                                        GoogleDriveService.getLastSignedInAccount(context)?.email ?: ""
-                                    }
-                                    if (accountEmail.isNotBlank()) {
-                                        googleDriveService.deleteFile(accountEmail, oldAttachment)
-                                    }
-                                }
+                            isUpdating = true
+                            try {
                                 spesaRepository.deleteSpesa(id)
+                                attachmentRepository.deleteAttachment(spesa.allegatoPath)
                                 selectedSpesa = null
                                 refreshList()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                                dialogError = "❌ Errore durante l'eliminazione: ${e.localizedMessage ?: e.message}"
+                            } finally {
+                                isUpdating = false
                             }
                         }
-                    }
+                    },
+                    enabled = !isUpdating
                 ) {
                     Text("Elimina", color = MaterialTheme.colorScheme.error)
                 }
