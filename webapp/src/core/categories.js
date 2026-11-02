@@ -22,6 +22,24 @@ export const LABEL_FUEL_CARD = 'Carta Carburante';
 
 export const KEY_TELEPASS = 'TELEPASS';
 
+/** Chip della categoria suggerita dall'OCR. */
+export function categoryFromOcr(suggestion) {
+  switch (suggestion) {
+    case 'Bar/Rist/Alb': return RISTORANTI;
+    case 'Parcheggio/Taxi': return PARCHEGGI;
+    case 'Carburante': return CARBURANTE;
+    case 'Telepass': return TELEPASS;
+    case 'Nolo': return NOLO;
+    default: return ALTRO;
+  }
+}
+
+export function paymentFromOcr(suggestion) {
+  if (suggestion === 'Contanti') return PAYMENT_CASH;
+  if (suggestion === 'Carta Carburante') return PAYMENT_FUEL_CARD;
+  return PAYMENT_CC;
+}
+
 /** Chiave della categoria salvata nel database. */
 export function categoryKey(category, payment) {
   switch (category) {

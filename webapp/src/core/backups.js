@@ -56,10 +56,18 @@ export function newerBackupToRestore(backups, syncState) {
   return newest.modified.getTime() > (syncState?.lastSyncMs ?? 0) ? newest : null;
 }
 
+/** Cartelle "AAAA" e "MM" degli allegati di una data (come attachmentFolderParts su Android). */
+export function attachmentFolderParts(dataSpesa) {
+  const year = dataSpesa?.length >= 4 ? dataSpesa.slice(0, 4) : '0000';
+  const month = dataSpesa?.length >= 7 ? dataSpesa.slice(5, 7) : '00';
+  return [year, month];
+}
+
 /** Tipo di allegato salvato nella colonna allegato_path. */
 export function attachmentKind(path) {
   if (!path) return 'none';
   if (path.startsWith('dropbox:')) return 'dropbox';
+  if (path.startsWith('webapp-local:')) return 'local';
   if (/^https?:\/\//i.test(path)) return 'link';
   return 'device';
 }

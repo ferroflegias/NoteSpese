@@ -142,6 +142,10 @@ export function updateSpesa(db, id, { data, destinazione, scopo, importo, note }
   );
 }
 
+export function updateAttachmentPath(db, id, path) {
+  db.run('UPDATE spese SET allegato_path = ? WHERE id = ?', [path ?? null, id]);
+}
+
 export function deleteSpesa(db, id) {
   db.run('DELETE FROM spese WHERE id = ?', [id]);
 }
