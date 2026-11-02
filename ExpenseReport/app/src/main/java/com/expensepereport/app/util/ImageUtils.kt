@@ -11,19 +11,26 @@ import java.io.ByteArrayOutputStream
 object ImageUtils {
 
     /**
-     * Longest side used for receipts: enough for OCR and printing, while keeping the
-     * bitmap around 10-15 MB instead of 50+ MB for a modern camera photo.
+     * Longest side of saved attachments: sharp in the exported PDF even when zoomed in,
+     * while avoiding the 50+ MB bitmaps of full-resolution camera photos.
      */
-    const val MAX_IMAGE_DIMENSION = 2048
+    const val ATTACHMENT_MAX_DIMENSION = 3200
+
+    /** Longest side for on-screen preview (crop dialog) and OCR, where speed matters more. */
+    const val PREVIEW_MAX_DIMENSION = 2048
 
     /** JPEG quality used for saved attachments and cropped photos. */
-    const val JPEG_QUALITY = 85
+    const val JPEG_QUALITY = 92
 
     /**
-     * Decodes the image at [uri] applying its EXIF rotation. Very large photos are
-     * subsampled so that the longest side stays below [maxDimension], avoiding OOM.
+     * Decodes the image at [uri] applying its EXIF rotation, with the longest side limited
+     * to [maxDimension] to avoid huge bitmaps.
+     *
+     * With [exactSize] = false (preview, OCR) only fast power-of-two subsampling is used, so the
+     * result may be up to half of [maxDimension]. With [exactSize] = true (saved attachments)
+     * the image is decoded slightly larger and then scaled to exactly [maxDimension].
      */
-    fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int = MAX_IMAGE_DIMENSION): Bitmap? {
+    fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int, exactSize: Boolean = false): Bitmap? {
         return try {
             val resolver = context.contentResolver
 
@@ -31,8 +38,13 @@ object ImageUtils {
             resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
+            val longestSide = maxOf(bounds.outWidth, bounds.outHeight)
             val options = BitmapFactory.Options().apply {
-                inSampleSize = calculateInSampleSize(bounds.outWidth, bounds.outHeight, maxDimension)
+                inSampleSize = if (exactSize) {
+                    largestSampleSizeKeeping(longestSide, maxDimension)
+                } else {
+                    calculateInSampleSize(bounds.outWidth, bounds.outHeight, maxDimension)
+                }
             }
             val bitmap = resolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, options)
@@ -46,25 +58,45 @@ object ImageUtils {
                 ExifInterface.ORIENTATION_ROTATE_90 -> 90f
                 ExifInterface.ORIENTATION_ROTATE_180 -> 180f
                 ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-                else -> return bitmap
+                else -> 0f
             }
+            val decodedLongest = maxOf(bitmap.width, bitmap.height)
+            val scale = if (decodedLongest > maxDimension) maxDimension.toFloat() / decodedLongest else 1f
 
-            val matrix = Matrix().apply { postRotate(degrees) }
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            if (rotated != bitmap) bitmap.recycle()
-            rotated
+            if (degrees == 0f && scale == 1f) return bitmap
+
+            // Rotation and final scaling in a single pass
+            val matrix = Matrix().apply {
+                postScale(scale, scale)
+                postRotate(degrees)
+            }
+            val transformed = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (transformed != bitmap) bitmap.recycle()
+            transformed
         } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } catch (e: OutOfMemoryError) {
             e.printStackTrace()
             null
         }
     }
 
+    /** Largest power of two that keeps the longest side at or above [minDimension]. */
+    fun largestSampleSizeKeeping(longestSide: Int, minDimension: Int): Int {
+        var sampleSize = 1
+        while (longestSide / (sampleSize * 2) >= minDimension) {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
+
     /**
-     * Re-encodes a photo as a JPEG no larger than [MAX_IMAGE_DIMENSION], with the EXIF rotation
-     * applied. Returns null if the image cannot be decoded. Call it off the main thread.
+     * Re-encodes a photo as a JPEG no larger than [ATTACHMENT_MAX_DIMENSION], with the EXIF
+     * rotation applied. Returns null if the image cannot be decoded. Call it off the main thread.
      */
     fun compressImageForAttachment(context: Context, uri: Uri): ByteArray? {
-        val bitmap = loadOrientedBitmap(context, uri) ?: return null
+        val bitmap = loadOrientedBitmap(context, uri, ATTACHMENT_MAX_DIMENSION, exactSize = true) ?: return null
         return try {
             ByteArrayOutputStream().use { output ->
                 bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)

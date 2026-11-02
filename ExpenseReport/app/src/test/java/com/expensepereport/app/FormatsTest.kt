@@ -46,4 +46,13 @@ class FormatsTest {
         assertEquals(2, ImageUtils.calculateInSampleSize(8000, 6000, 4096))
         assertEquals(4, ImageUtils.calculateInSampleSize(3000, 12000, 4096))
     }
+
+    @Test
+    fun largestSampleSizeKeeping_neverGoesBelowTarget() {
+        // 12 MP photo: no subsampling, otherwise it would drop to 2016 px (< 3200)
+        assertEquals(1, ImageUtils.largestSampleSizeKeeping(4032, 3200))
+        // 50 MP photo: 8160 / 2 = 4080 still covers 3200
+        assertEquals(2, ImageUtils.largestSampleSizeKeeping(8160, 3200))
+        assertEquals(1, ImageUtils.largestSampleSizeKeeping(1000, 3200))
+    }
 }

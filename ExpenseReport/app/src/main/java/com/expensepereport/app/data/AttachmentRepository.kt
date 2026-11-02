@@ -20,14 +20,18 @@ class AttachmentRepository(
     companion object {
         const val LOCAL_ATTACHMENTS_FOLDER = "NoteSpese_Allegati"
         private const val VIEW_CACHE_FOLDER = "allegati_view"
+        const val CROPPED_FILE_PREFIX = "cropped_rec_"
     }
 
     /** Returns the saved attachment path, or null if the file could not be read or stored. */
     suspend fun saveAttachment(uri: Uri, isPdf: Boolean, dataSpesa: String): String? {
         val fileBytes = withContext(Dispatchers.IO) {
             try {
-                // Photos are resized before upload: a full-resolution camera shot is 5-10 MB
-                val compressed = if (isPdf) null else ImageUtils.compressImageForAttachment(context, uri)
+                // Photos are resized before upload: a full-resolution camera shot is 5-10 MB.
+                // Photos from the crop dialog are already sized and encoded: no second JPEG pass.
+                val alreadyCropped = uri.scheme == "file" &&
+                    uri.lastPathSegment?.startsWith(CROPPED_FILE_PREFIX) == true
+                val compressed = if (isPdf || alreadyCropped) null else ImageUtils.compressImageForAttachment(context, uri)
                 compressed ?: context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             } catch (e: Exception) {
                 e.printStackTrace()
