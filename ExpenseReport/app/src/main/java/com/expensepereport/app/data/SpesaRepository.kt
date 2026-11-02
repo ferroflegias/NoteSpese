@@ -158,35 +158,47 @@ class SpesaRepository(private val context: Context) {
      * The format is detected from the file header: opening a non-SQLite file with
      * SQLiteDatabase would trigger the corruption handler, which deletes the file.
      */
-    suspend fun importFromFile(inputFile: File): Boolean = withContext(Dispatchers.IO) {
+    suspend fun importFromFile(inputFile: File): ImportResult = withContext(Dispatchers.IO) {
         try {
             val entities = if (isSqliteFile(inputFile)) {
+                if (!hasSpeseTable(inputFile)) return@withContext ImportResult.NO_EXPENSES_TABLE
                 readEntitiesFromSqlite(inputFile)
             } else {
                 readEntitiesFromJson(inputFile)
             }
-            if (entities.isEmpty()) return@withContext false
+            if (entities.isEmpty()) return@withContext ImportResult.EMPTY
             spesaDao.replaceAll(entities)
-            true
+            ImportResult.SUCCESS
         } catch (e: Exception) {
             e.printStackTrace()
-            false
+            ImportResult.INVALID_FILE
         }
     }
 
-    suspend fun importDatabaseFromUri(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+    /**
+     * Backups made by older versions copied the .db file without a WAL checkpoint:
+     * when all the data was still in the -wal file, the copy has no "spese" table.
+     */
+    private fun hasSpeseTable(inputFile: File): Boolean =
+        SQLiteDatabase.openDatabase(inputFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY).use { externalDb ->
+            externalDb.rawQuery(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spese'", null
+            ).use { it.moveToFirst() }
+        }
+
+    suspend fun importDatabaseFromUri(uri: Uri): ImportResult = withContext(Dispatchers.IO) {
         val tempFile = File(context.cacheDir, "temp_import.file")
         try {
             val copied = context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(tempFile).use { output -> input.copyTo(output) }
             }
             if (copied == null || tempFile.length() == 0L) {
-                return@withContext false
+                return@withContext ImportResult.INVALID_FILE
             }
             importFromFile(tempFile)
         } catch (e: Exception) {
             e.printStackTrace()
-            false
+            ImportResult.INVALID_FILE
         } finally {
             tempFile.delete()
         }
@@ -194,5 +206,23 @@ class SpesaRepository(private val context: Context) {
 
     companion object {
         private val SQLITE_HEADER = "SQLite format 3\u0000".toByteArray(Charsets.US_ASCII)
+    }
+}
+
+enum class ImportResult {
+    SUCCESS,
+    /** The file is a valid database or JSON array but contains no expenses. */
+    EMPTY,
+    /** SQLite database without the "spese" table (e.g. a backup taken without WAL checkpoint). */
+    NO_EXPENSES_TABLE,
+    /** Unreadable, corrupted or unsupported file. */
+    INVALID_FILE;
+
+    /** User-facing description of a failed import. */
+    fun errorMessage(): String = when (this) {
+        SUCCESS -> ""
+        EMPTY -> "Il file non contiene nessuna spesa: è un backup vuoto."
+        NO_EXPENSES_TABLE -> "Il file non contiene la tabella delle spese: probabilmente è un backup incompleto, creato da una versione precedente dell'app. Prova un backup più grande o più recente."
+        INVALID_FILE -> "Il file non è un database SQLite o un file JSON valido, oppure è danneggiato."
     }
 }
