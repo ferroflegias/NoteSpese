@@ -7,6 +7,17 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Credentials are read from local.properties (not committed) or environment variables
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+fun localOrEnv(key: String): String? =
+    localProperties.getProperty(key) ?: System.getenv(key)
+
+// Dropbox App key (public, not a secret: the PKCE flow needs no client secret)
+val dropboxAppKey = localOrEnv("DROPBOX_APP_KEY")?.trim().orEmpty()
+
 android {
     namespace = "com.expensepereport.app"
     compileSdk = 34
@@ -22,15 +33,12 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        buildConfigField("String", "DROPBOX_APP_KEY", "\"$dropboxAppKey\"")
+        manifestPlaceholders["dropboxKey"] = dropboxAppKey
     }
 
-    // Signing credentials are read from local.properties (not committed) or environment variables
-    val localProperties = Properties().apply {
-        val file = rootProject.file("local.properties")
-        if (file.exists()) file.inputStream().use { load(it) }
-    }
-    fun signingValue(key: String): String? =
-        localProperties.getProperty(key) ?: System.getenv(key)
+    fun signingValue(key: String): String? = localOrEnv(key)
 
     val releaseStoreFile = signingValue("RELEASE_STORE_FILE")
     val hasReleaseSigning = releaseStoreFile != null
@@ -81,6 +89,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.8"
@@ -126,15 +135,9 @@ dependencies {
     // WorkManager for scheduled daily backups
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-    // Google Sign-In & Google Drive API
-    implementation("com.google.android.gms:play-services-auth:20.7.0")
-    implementation("com.google.api-client:google-api-client-android:2.2.0") {
-        exclude(group = "org.apache.httpcomponents")
-    }
-    implementation("com.google.apis:google-api-services-drive:v3-rev20230822-2.0.0") {
-        exclude(group = "org.apache.httpcomponents")
-    }
-    implementation("com.google.http-client:google-http-client-gson:1.43.3")
+    // Dropbox API v2 (attachments and database backups)
+    implementation("com.dropbox.core:dropbox-core-sdk:7.0.0")
+    implementation("com.dropbox.core:dropbox-android-sdk:7.0.0")
 
     // ML Kit Text Recognition for OCR
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.0")

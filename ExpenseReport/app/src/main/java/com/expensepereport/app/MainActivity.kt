@@ -23,7 +23,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.AttachmentRepository
-import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.DropboxService
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.screens.ExportScreen
 import com.expensepereport.app.ui.screens.NewExpenseScreen
@@ -64,8 +64,8 @@ class MainActivity : ComponentActivity() {
 
         val settingsRepository = AppSettingsRepository(applicationContext)
         val spesaRepository = SpesaRepository(applicationContext)
-        val googleDriveService = GoogleDriveService(applicationContext)
-        val attachmentRepository = AttachmentRepository(applicationContext, settingsRepository, googleDriveService)
+        val dropboxService = DropboxService(applicationContext, settingsRepository)
+        val attachmentRepository = AttachmentRepository(applicationContext, dropboxService)
 
         lifecycleScope.launch {
             settingsRepository.ensureDailyBackupScheduled()
@@ -145,7 +145,7 @@ class MainActivity : ComponentActivity() {
                                 SettingsScreen(
                                     settingsRepository = settingsRepository,
                                     spesaRepository = spesaRepository,
-                                    googleDriveService = googleDriveService
+                                    dropboxService = dropboxService
                                 )
                             }
                         }

@@ -178,7 +178,7 @@ object DocumentGenerator {
 
     /**
      * Builds a PDF with up to 4 attachments per page; PDF attachments are appended at the end.
-     * [readAttachment] loads an attachment (local file or Google Drive) from its stored path.
+     * [readAttachment] loads an attachment (local file or Dropbox) from its stored path.
      */
     suspend fun generatePdfAttachments(
         context: Context,
@@ -266,7 +266,7 @@ object DocumentGenerator {
                     continue
                 }
 
-                // Drive links carry no file extension: recognise PDFs from their content
+                // Recognise PDFs from their content rather than from the stored path
                 if (isPdf(attachmentBytes)) {
                     pendingPdfsToMerge.add(Pair(spesa, attachmentBytes))
                     canvas.drawText("📄 [Documento PDF allegato e unito in coda]", startX, startY + 80f, boldPaint)

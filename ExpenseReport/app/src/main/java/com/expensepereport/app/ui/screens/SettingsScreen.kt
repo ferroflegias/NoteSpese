@@ -13,31 +13,30 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.expensepereport.app.data.AppSettingsRepository
-import com.expensepereport.app.data.GoogleDriveService
+import com.expensepereport.app.data.BackupEntry
+import com.expensepereport.app.data.DropboxService
 import com.expensepereport.app.data.ImportResult
 import com.expensepereport.app.data.SpesaRepository
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.common.api.ApiException
-import com.google.api.services.drive.model.File
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Locale
 
 @Composable
 fun SettingsScreen(
     settingsRepository: AppSettingsRepository,
     spesaRepository: SpesaRepository,
-    googleDriveService: GoogleDriveService
+    dropboxService: DropboxService
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
 
-    var googleAccount by remember {
-        mutableStateOf(GoogleDriveService.getLastSignedInAccount(context))
-    }
-
-    val savedEmail by settingsRepository.googleAccountEmailFlow.collectAsState(initial = "")
-    val activeEmail = googleAccount?.email ?: savedEmail
+    val dropboxAccount by settingsRepository.dropboxAccountFlow.collectAsState(initial = "")
+    val isDropboxConnected = dropboxAccount.isNotBlank()
 
     var hasTemplate by remember { mutableStateOf(settingsRepository.hasCustomExcelTemplate()) }
 
@@ -51,36 +50,23 @@ fun SettingsScreen(
     var isPerformingAction by remember { mutableStateOf(false) }
     var statusMessage by remember { mutableStateOf("") }
 
-    var availableBackups by remember { mutableStateOf<List<File>>(emptyList()) }
+    var availableBackups by remember { mutableStateOf<List<BackupEntry>>(emptyList()) }
     var showRestoreDialog by remember { mutableStateOf(false) }
 
-    val googleSignInLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        if (result.data != null) {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-            try {
-                val account = task.getResult(ApiException::class.java)
-                googleAccount = account
-                account?.email?.let { email ->
-                    scope.launch { settingsRepository.saveGoogleAccountEmail(email) }
+    // Dropbox returns to the app after the authorisation: pick up the credential on resume
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                scope.launch {
+                    val email = dropboxService.completeLoginIfPending()
+                    if (email != null) {
+                        statusMessage = "🎉 Dropbox collegato con successo: $email"
+                    }
                 }
-                statusMessage = "🎉 Accesso Google effettuato con successo: ${account?.email}"
-            } catch (e: ApiException) {
-                val errorReason = when (e.statusCode) {
-                    10 -> "10 (DEVELOPER_ERROR: Verifica che l'impronta SHA-1 del keystore e il Package Name siano registrati su Google Cloud Console e che lo stato della Schermata di consenso OAuth sia 'In produzione')"
-                    12500 -> "12500 (Configurazione Client ID OAuth richiesta su Google Cloud Console)"
-                    7 -> "7 (NETWORK_ERROR: Nessuna connessione ad Internet)"
-                    4 -> "4 (SIGN_IN_REQUIRED)"
-                    else -> "Codice errore Google: ${e.statusCode}"
-                }
-                statusMessage = "⚠️ Accesso Google non completato: $errorReason."
-            } catch (e: Exception) {
-                statusMessage = "⚠️ Errore durante l'accesso Google: ${e.localizedMessage ?: e.message}"
             }
-        } else {
-            statusMessage = "⚠️ Selezione account annullata o non riuscita."
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     val dbImportLauncher = rememberLauncherForActivityResult(
@@ -131,18 +117,22 @@ fun SettingsScreen(
         Text("⚙️ Impostazioni App", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- SECTION 1: GOOGLE ACCOUNT & DRIVE ---
-        Text("☁️ Account Google & Drive", style = MaterialTheme.typography.titleLarge)
+        // --- SECTION 1: DROPBOX ---
+        Text("☁️ Dropbox", style = MaterialTheme.typography.titleLarge)
         Spacer(modifier = Modifier.height(8.dp))
 
-        if (activeEmail.isNotBlank()) {
+        if (isDropboxConnected) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("✅ Accesso Effettuato", style = MaterialTheme.typography.titleSmall)
-                    Text(activeEmail, style = MaterialTheme.typography.bodyLarge)
+                    Text("✅ Dropbox collegato", style = MaterialTheme.typography.titleSmall)
+                    Text(dropboxAccount, style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Allegati e backup sono salvati in Dropbox › App › (nome dell'app Dropbox), nelle cartelle 'Allegati' e 'Backups'.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
@@ -153,36 +143,30 @@ fun SettingsScreen(
             ) {
                 Button(
                     onClick = {
-                        scope.launch {
-                            val urlToOpen = googleDriveService.getAttachmentsFolderUrl(activeEmail)
-                            if (!urlToOpen.isNullOrBlank()) {
-                                try {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(urlToOpen))
-                                    context.startActivity(intent)
-                                } catch (e: Exception) {
-                                    statusMessage = "Impossibile aprire il link Google Drive."
-                                }
-                            } else {
-                                statusMessage = "Errore durante il recupero della cartella Google Drive."
-                            }
+                        try {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.dropbox.com/home/Apps")))
+                        } catch (e: Exception) {
+                            statusMessage = "Impossibile aprire Dropbox."
                         }
                     },
                     modifier = Modifier.weight(1f)
                 ) {
-                    Text("📂 Cartella GDrive")
+                    Text("📂 Apri Dropbox")
                 }
 
                 OutlinedButton(
                     onClick = {
-                        GoogleDriveService.signOut(context) {
-                            googleAccount = null
-                            scope.launch { settingsRepository.saveGoogleAccountEmail("") }
-                            statusMessage = "Disconnessione effettuata."
+                        scope.launch {
+                            isPerformingAction = true
+                            dropboxService.disconnect()
+                            isPerformingAction = false
+                            statusMessage = "Dropbox scollegato."
                         }
                     },
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f),
+                    enabled = !isPerformingAction
                 ) {
-                    Text("🚪 Disconnetti")
+                    Text("🚪 Scollega")
                 }
             }
         } else {
@@ -191,9 +175,9 @@ fun SettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("🔑 Accesso Google Richiesto", style = MaterialTheme.typography.titleSmall)
+                    Text("🔑 Dropbox non collegato", style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "Accedi con il tuo Account Google per salvare automaticamente gli allegati e i backup del database sul tuo Google Drive.",
+                        "Collega Dropbox per salvare automaticamente gli allegati e i backup del database. Senza Dropbox gli allegati restano solo sul telefono.",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
@@ -202,27 +186,19 @@ fun SettingsScreen(
 
             Button(
                 onClick = {
-                    val client = GoogleSignIn.getClient(context, GoogleDriveService.getGoogleSignInOptions())
-                    googleSignInLauncher.launch(client.signInIntent)
+                    if (!DropboxService.isConfigured) {
+                        statusMessage = "⚠️ Questo APK è stato compilato senza App key Dropbox (DROPBOX_APP_KEY): impossibile collegare Dropbox."
+                        return@Button
+                    }
+                    try {
+                        dropboxService.startLogin(context)
+                    } catch (e: Exception) {
+                        statusMessage = "⚠️ Impossibile avviare l'accesso a Dropbox: ${e.localizedMessage ?: e.message}"
+                    }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("🔑 Accedi con Google")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-        ) {
-            Column(modifier = Modifier.padding(12.dp)) {
-                Text("ℹ️ Info Configurazione OAuth Google Cloud Console", style = MaterialTheme.typography.titleSmall)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text("Package Name: com.expensepereport.app", style = MaterialTheme.typography.bodySmall)
-                Text("Impronta SHA-1 Keystore APK:", style = MaterialTheme.typography.bodySmall)
-                Text("5D:6C:3B:16:C8:09:2E:4D:4A:8E:1D:B7:F5:B2:D3:FD:AD:17:51:69", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                Text("🔗 Collega Dropbox")
             }
         }
 
@@ -282,58 +258,58 @@ fun SettingsScreen(
 
         Button(
             onClick = {
-                if (activeEmail.isBlank()) {
-                    statusMessage = "⚠️ Accedi prima con il tuo account Google per eseguire il backup."
+                if (!isDropboxConnected) {
+                    statusMessage = "⚠️ Collega prima Dropbox per eseguire il backup."
                     return@Button
                 }
                 scope.launch {
                     isPerformingAction = true
-                    statusMessage = "Esecuzione backup manuale su Google Drive..."
+                    statusMessage = "Esecuzione backup manuale su Dropbox..."
                     val success = try {
                         val dbFile = spesaRepository.getDatabaseFileForBackup()
-                        googleDriveService.uploadDatabaseBackup(activeEmail, dbFile)
+                        dropboxService.uploadDatabaseBackup(dbFile)
                     } catch (e: Exception) {
                         e.printStackTrace()
                         false
                     }
                     isPerformingAction = false
                     if (success) {
-                        statusMessage = "🎉 Backup salvato con successo nella cartella 'NoteSpese_Backups' su Google Drive!"
+                        statusMessage = "🎉 Backup salvato con successo nella cartella 'Backups' su Dropbox!"
                     } else {
-                        statusMessage = "❌ Errore durante il caricamento del backup su Google Drive."
+                        statusMessage = "❌ Errore durante il caricamento del backup su Dropbox."
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth(),
             enabled = !isPerformingAction
         ) {
-            Text("💾 Esegui Backup Ora su GDrive")
+            Text("💾 Esegui Backup Ora su Dropbox")
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         OutlinedButton(
             onClick = {
-                if (activeEmail.isBlank()) {
-                    statusMessage = "⚠️ Accedi prima con il tuo account Google per recuperare i backup."
+                if (!isDropboxConnected) {
+                    statusMessage = "⚠️ Collega prima Dropbox per recuperare i backup."
                     return@OutlinedButton
                 }
                 scope.launch {
                     isPerformingAction = true
-                    statusMessage = "Caricamento elenco backup da Google Drive..."
-                    availableBackups = googleDriveService.listBackups(activeEmail)
+                    statusMessage = "Caricamento elenco backup da Dropbox..."
+                    availableBackups = dropboxService.listBackups()
                     isPerformingAction = false
                     if (availableBackups.isNotEmpty()) {
                         showRestoreDialog = true
                     } else {
-                        statusMessage = "Nessun backup trovato nella cartella 'NoteSpese_Backups' su GDrive."
+                        statusMessage = "Nessun backup trovato nella cartella 'Backups' su Dropbox."
                     }
                 }
             },
             modifier = Modifier.fillMaxWidth(),
             enabled = !isPerformingAction
         ) {
-            Text("🔄 Ripristina Database da Backup GDrive")
+            Text("🔄 Ripristina Database da Backup Dropbox")
         }
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
@@ -387,7 +363,7 @@ fun SettingsScreen(
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     Text("⚠️ Il ripristino sovrascriverà i dati locali con il backup selezionato:")
                     Spacer(modifier = Modifier.height(8.dp))
-                    availableBackups.forEach { file ->
+                    availableBackups.forEach { backup ->
                         TextButton(
                             onClick = {
                                 showRestoreDialog = false
@@ -396,9 +372,9 @@ fun SettingsScreen(
                                     statusMessage = "Scaricamento e ripristino backup in corso..."
                                     val tempFile = java.io.File(context.cacheDir, "temp_restore.db")
                                     try {
-                                        val downloaded = googleDriveService.downloadBackup(activeEmail, file.id, tempFile)
+                                        val downloaded = dropboxService.downloadBackup(backup.path, tempFile)
                                         statusMessage = if (!downloaded) {
-                                            "❌ Impossibile scaricare il file dal backup su GDrive."
+                                            "❌ Impossibile scaricare il file di backup da Dropbox."
                                         } else {
                                             val result = spesaRepository.importFromFile(tempFile)
                                             if (result == ImportResult.SUCCESS) {
@@ -415,8 +391,11 @@ fun SettingsScreen(
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            val sizeKb = file.getSize()?.let { String.format(Locale.ITALY, " (%.0f KB)", it / 1024.0) } ?: ""
-                            Text((file.name ?: file.id) + sizeKb)
+                            val sizeKb = String.format(Locale.ITALY, " (%.0f KB)", backup.sizeBytes / 1024.0)
+                            val date = backup.modified?.let {
+                                SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.ITALY).format(it) + " – "
+                            } ?: ""
+                            Text(date + backup.name + sizeKb)
                         }
                     }
                 }
