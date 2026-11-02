@@ -1,6 +1,7 @@
 package com.expensepereport.app.data
 
 import android.content.Context
+import android.net.Uri
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -10,9 +11,11 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.expensepereport.app.util.DatabaseBackupWorker
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
 import java.util.concurrent.TimeUnit
@@ -88,7 +91,7 @@ class AppSettingsRepository(private val context: Context) {
         }
     }
 
-    fun scheduleDailyBackup(
+    private fun scheduleDailyBackup(
         hour: Int,
         minute: Int,
         policy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE
@@ -118,13 +121,21 @@ class AppSettingsRepository(private val context: Context) {
         )
     }
 
-    fun cancelDailyBackup() {
+    private fun cancelDailyBackup() {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME_BACKUP)
     }
 
-    fun saveExcelTemplate(inputBytes: ByteArray): Boolean {
-        return try {
-            File(context.filesDir, EXCEL_TEMPLATE_FILENAME).writeBytes(inputBytes)
+    /**
+     * Copies the Excel template chosen by the user into the app storage.
+     * Returns false if the file cannot be read or is not an .xlsx file (a ZIP archive).
+     */
+    suspend fun saveExcelTemplate(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            if (bytes == null || bytes.size < 4 || bytes[0] != 'P'.code.toByte() || bytes[1] != 'K'.code.toByte()) {
+                return@withContext false
+            }
+            File(context.filesDir, EXCEL_TEMPLATE_FILENAME).writeBytes(bytes)
             true
         } catch (e: Exception) {
             e.printStackTrace()

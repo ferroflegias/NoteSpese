@@ -24,3 +24,6 @@ fun isValidIsoDate(value: String): Boolean {
 fun parseAmount(value: String): Double? = value.trim().replace(",", ".").toDoubleOrNull()
 
 fun formatAmount(value: Double): String = String.format(Locale.US, "%.2f", value)
+
+/** Timestamp used in the names of uploaded attachments and backups, e.g. 20260131_142500. */
+fun fileTimestamp(): String = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())

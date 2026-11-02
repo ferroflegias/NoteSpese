@@ -3,7 +3,6 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("org.jetbrains.kotlin.plugin.serialization")
     id("com.google.devtools.ksp")
 }
 
@@ -29,27 +28,20 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        vectorDrawables {
-            useSupportLibrary = true
-        }
-
         buildConfigField("String", "DROPBOX_APP_KEY", "\"$dropboxAppKey\"")
         manifestPlaceholders["dropboxKey"] = dropboxAppKey
     }
 
-    fun signingValue(key: String): String? = localOrEnv(key)
-
-    val releaseStoreFile = signingValue("RELEASE_STORE_FILE")
+    val releaseStoreFile = localOrEnv("RELEASE_STORE_FILE")
     val hasReleaseSigning = releaseStoreFile != null
 
     signingConfigs {
         if (hasReleaseSigning) {
             create("config") {
                 storeFile = rootProject.file(releaseStoreFile!!)
-                storePassword = signingValue("RELEASE_STORE_PASSWORD")
-                keyAlias = signingValue("RELEASE_KEY_ALIAS")
-                keyPassword = signingValue("RELEASE_KEY_PASSWORD")
+                storePassword = localOrEnv("RELEASE_STORE_PASSWORD")
+                keyAlias = localOrEnv("RELEASE_KEY_ALIAS")
+                keyPassword = localOrEnv("RELEASE_KEY_PASSWORD")
             }
         }
     }
@@ -65,10 +57,6 @@ android {
                 signingConfig = signingConfigs.getByName("config")
             }
             isMinifyEnabled = false
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
         }
     }
 
@@ -118,7 +106,6 @@ dependencies {
     implementation(platform("androidx.compose:compose-bom:2024.02.00"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.navigation:navigation-compose:2.7.7")
@@ -149,14 +136,6 @@ dependencies {
     // Apache POI for Excel (.xlsx) manipulation
     implementation("org.apache.poi:poi-ooxml:5.2.5")
 
-    // Kotlinx Serialization
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.2")
-
     // Testing
     testImplementation("junit:junit:4.13.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("androidx.test.espresso:espresso-core:3.5.1")
-    androidTestImplementation(platform("androidx.compose:compose-bom:2024.02.00"))
-    androidTestImplementation("androidx.compose.ui:ui-tooling")
-    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

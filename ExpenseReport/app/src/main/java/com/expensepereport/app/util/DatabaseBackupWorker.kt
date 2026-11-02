@@ -13,7 +13,7 @@ class DatabaseBackupWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        val dropboxService = DropboxService(applicationContext, AppSettingsRepository(applicationContext))
+        val dropboxService = DropboxService(AppSettingsRepository(applicationContext))
         if (!dropboxService.isConnected()) return Result.failure()
 
         val dbFile = SpesaRepository(applicationContext).getDatabaseFileForBackup()

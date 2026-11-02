@@ -2,6 +2,7 @@ package com.expensepereport.app.util
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import com.google.mlkit.vision.common.InputImage
@@ -11,7 +12,6 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
-import java.util.regex.Pattern
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -65,106 +65,97 @@ object OcrAnalyzer {
             } ?: throw OcrException("il riconoscimento del testo non ha risposto entro ${OCR_TIMEOUT_MS / 1000} secondi")
         } finally {
             recognizer.close()
+            bitmap.recycle()
         }
 
-        val fullText = visionText.text
+        return parseReceiptText(visionText.text)
+    }
+
+    /** Keywords searched in the receipt text with [containsWord]. */
+    private val FUEL_WORDS = listOf("benzina", "gasolio", "q8", "eni", "agip", "tamoil", "shell", "carburante", "fuel", "distributore")
+    private val RESTAURANT_WORDS = listOf("ristorante", "pizzeria", "bar", "trattoria", "osteria", "caffe", "caffè", "coffee", "food", "pranzo", "cena", "ristoro", "hotel", "albergo")
+    private val PARKING_WORDS = listOf("parcheggio", "sosta", "parking", "garage", "taxi")
+    private val TOLL_WORDS = listOf("telepass", "autostrade", "autostrada", "pedaggio")
+    private val CARD_WORDS = listOf("carta", "bancomat", "pos", "visa", "mastercard", "contactless", "pagobancomat")
+    private val TOTAL_WORDS = listOf("totale", "tot", "eur", "€", "importo", "somma", "euro")
+    private val MERCHANT_EXCLUDED_WORDS = listOf("ricevuta", "scontrino", "fattura", "via", "tel")
+
+    private val DATE_REGEX = Regex("""\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b""")
+    private val AMOUNT_REGEX = Regex("""\b\d+[,.]\d{2}\b""")
+
+    /**
+     * Extracts date, merchant, amount, category and payment method from the text of a receipt.
+     * Returns null when the text is blank. Pure function: it is covered by unit tests.
+     */
+    fun parseReceiptText(fullText: String): OcrResult? {
         if (fullText.isBlank()) return null
+        val lines = fullText.lines()
 
-        // 1. Date extraction (DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY)
-        var extractedDateStr = todayIsoDate()
-
-        val datePattern = Pattern.compile("\\b(\\d{1,2})[/.-](\\d{1,2})[/.-](\\d{2,4})\\b")
-        val dateMatcher = datePattern.matcher(fullText)
-        while (dateMatcher.find()) {
-            val d = dateMatcher.group(1)?.toIntOrNull() ?: continue
-            val m = dateMatcher.group(2)?.toIntOrNull() ?: continue
-            var y = dateMatcher.group(3)?.toIntOrNull() ?: continue
+        // 1. Date (DD/MM/YYYY, DD-MM-YYYY, DD.MM.YY...): the first real calendar date
+        val extractedDate = DATE_REGEX.findAll(fullText).firstNotNullOfOrNull { match ->
+            val (d, m, yRaw) = match.destructured
+            var y = yRaw.toInt()
             if (y < 100) y += 2000
             // Strict validation: reject impossible dates (e.g. 31/02) instead of letting them roll over
-            val candidate = String.format(Locale.US, "%04d-%02d-%02d", y, m, d)
-            if (isValidIsoDate(candidate)) {
-                extractedDateStr = candidate
-                break
-            }
-        }
+            String.format(Locale.US, "%04d-%02d-%02d", y, m.toInt(), d.toInt())
+                .takeIf { y in 2000..2099 && isValidIsoDate(it) }
+        } ?: todayIsoDate()
 
-        // 2. Amount extraction
-        val lines = fullText.split("\n")
-        val totalCandidates = mutableListOf<Double>()
-        val allAmounts = mutableListOf<Double>()
+        // 2. Amount: the largest amount on a "total" line, otherwise the largest amount in the text
+        fun amountsIn(text: String) = AMOUNT_REGEX.findAll(text).mapNotNull { it.value.replace(",", ".").toDoubleOrNull() }
+        val totalCandidates = lines
+            .filter { line -> TOTAL_WORDS.any { line.containsWord(it) } }
+            .flatMap { amountsIn(it) }
+        val extractedAmount = totalCandidates.maxOrNull() ?: amountsIn(fullText).maxOrNull() ?: 0.0
 
-        val amountPattern = Pattern.compile("\\b\\d+[,.]\\d{2}\\b")
-        val amountMatcher = amountPattern.matcher(fullText)
-        while (amountMatcher.find()) {
-            val amtStr = amountMatcher.group().replace(",", ".")
-            amtStr.toDoubleOrNull()?.let { allAmounts.add(it) }
-        }
+        // 3. Merchant: the first of the top lines that is not a header, an address or a phone number
+        val extractedDestinazione = lines.map { it.trim() }
+            .filter { it.length > 3 }
+            .take(4)
+            .firstOrNull { line -> MERCHANT_EXCLUDED_WORDS.none { line.containsWord(it) } }
+            ?.take(40)
+            ?: "Esercente Sconosciuto"
 
-        val keywords = listOf("totale", "tot", "eur", "€", "importo", "somma", "euro")
-        for (line in lines) {
-            val lowerLine = line.lowercase(Locale.ITALIAN)
-            if (keywords.any { lowerLine.contains(it) }) {
-                val lineMatcher = amountPattern.matcher(line)
-                while (lineMatcher.find()) {
-                    val amtStr = lineMatcher.group().replace(",", ".")
-                    amtStr.toDoubleOrNull()?.let { totalCandidates.add(it) }
-                }
-            }
-        }
-
-        val extractedAmount = when {
-            totalCandidates.isNotEmpty() -> totalCandidates.maxOrNull() ?: 0.0
-            allAmounts.isNotEmpty() -> allAmounts.maxOrNull() ?: 0.0
-            else -> 0.0
-        }
-
-        // 3. Destination / Merchant (first line with valid text)
-        var extractedDestinazione = "Esercente Sconosciuto"
-        val validLines = lines.map { it.trim() }.filter { it.length > 3 }
-        for (vl in validLines.take(4)) {
-            val lower = vl.lowercase(Locale.ITALIAN)
-            // "tel" must be a whole word, otherwise names like "Hotel ..." are discarded
-            if (!lower.contains("ricevuta") && !lower.contains("scontrino") && !lower.contains("fattura") && !lower.contains("via ") && !TEL_REGEX.containsMatchIn(lower)) {
-                extractedDestinazione = vl.take(40)
-                break
-            }
-        }
-
-        // 4. Category & Payment suggestion
-        val textLower = fullText.lowercase(Locale.ITALIAN)
+        // 4. Category & payment suggestion
         var categoriaSuggerita = "Altro"
         var pagamentoSuggerito = "Contanti"
-
-        if (listOf("benzina", "gasolio", "q8", "eni", "agip", "tamoil", "shell", "carburante", "fuel", "distributore").any { textLower.contains(it) }) {
-            categoriaSuggerita = "Carburante"
-            pagamentoSuggerito = "Carta Carburante"
-        } else if (listOf("ristorante", "pizzeria", "bar", "trattoria", "osteria", "caffe", "coffee", "food", "pranzo", "cena", "ristoro").any { textLower.contains(it) }) {
-            categoriaSuggerita = "Bar/Rist/Alb"
-            pagamentoSuggerito = "CC"
-        } else if (listOf("parcheggio", "sosta", "parking", "garage").any { textLower.contains(it) }) {
-            categoriaSuggerita = "Parcheggio/Taxi"
-            pagamentoSuggerito = "Contanti"
-        } else if (listOf("telepass", "autostrade", "pedaggio").any { textLower.contains(it) }) {
-            categoriaSuggerita = "Telepass"
+        when {
+            FUEL_WORDS.any { fullText.containsWord(it) } -> {
+                categoriaSuggerita = "Carburante"
+                pagamentoSuggerito = "Carta Carburante"
+            }
+            RESTAURANT_WORDS.any { fullText.containsWord(it) } -> {
+                categoriaSuggerita = "Bar/Rist/Alb"
+                pagamentoSuggerito = "CC"
+            }
+            PARKING_WORDS.any { fullText.containsWord(it) } -> categoriaSuggerita = "Parcheggio/Taxi"
+            TOLL_WORDS.any { fullText.containsWord(it) } -> categoriaSuggerita = "Telepass"
         }
-
-        if (listOf("carta", "bancomat", "pos", "visa", "mastercard", "contactless", "pagobancomat").any { textLower.contains(it) }) {
+        if (CARD_WORDS.any { fullText.containsWord(it) }) {
             pagamentoSuggerito = "CC"
         }
-
-        val noteExtracted = fullText.replace("\n", " ").take(120)
 
         return OcrResult(
-            dataStr = extractedDateStr,
+            dataStr = extractedDate,
             destinazione = extractedDestinazione,
             importo = extractedAmount,
             categoriaSuggerita = categoriaSuggerita,
             pagamentoSuggerito = pagamentoSuggerito,
-            noteExtracted = noteExtracted
+            noteExtracted = fullText.replace("\n", " ").take(120)
         )
     }
 
-    private val TEL_REGEX = Regex("\\btel\\b")
+    /**
+     * Case-insensitive search of [word] not preceded by a letter. Short words (up to 4 characters,
+     * e.g. "eni", "bar", "pos", "tel") must not be followed by a letter either, so "beni",
+     * "barcode", "posto" or "Hotel" do not match; longer words also match at the beginning
+     * of a longer word ("ristorante" in "ristoranteria"). Digits are allowed around words: "12,50EUR".
+     */
+    private fun String.containsWord(word: String): Boolean {
+        val end = if (word.length <= 4) "(?!\\p{L})" else ""
+        // (?iu): case-insensitive also for accented letters ("CAFFÈ")
+        return Regex("(?iu)(?<!\\p{L})" + Regex.escape(word) + end).containsMatchIn(this)
+    }
 
     private fun renderPdfFirstPageToBitmap(context: Context, pdfUri: Uri): Bitmap? {
         return try {
@@ -173,6 +164,9 @@ object OcrAnalyzer {
                     if (pdfRenderer.pageCount == 0) return null
                     pdfRenderer.openPage(0).use { page ->
                         val bitmap = Bitmap.createBitmap(page.width * 2, page.height * 2, Bitmap.Config.ARGB_8888)
+                        // PDF pages are often transparent: without a white background the text
+                        // would be black on black and the OCR would find nothing
+                        bitmap.eraseColor(Color.WHITE)
                         page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                         bitmap
                     }

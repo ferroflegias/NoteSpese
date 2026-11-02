@@ -1,19 +1,20 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Environment
-.venv/
-venv/
-ENV/
-
-# Android / Gradle build outputs
+# Android / Gradle
 .gradle/
 build/
-*/build/
+.kotlin/
+.externalNativeBuild/
+.cxx/
+captures/
+local.properties
 *.apk
+*.aab
 *.aar
+
+# IDE
 .idea/
 *.iml
-local.properties
+.DS_Store
+
+# Signing keys
+*.keystore
+*.jks

@@ -5,12 +5,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.expensepereport.app.data.ExpenseCategories
 import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaRepository
-import com.expensepereport.app.util.DocumentGenerator
+import com.expensepereport.app.ui.components.MonthSelector
+import com.expensepereport.app.ui.components.YearSelector
 import com.expensepereport.app.util.formatAmount
 import java.util.Calendar
 
@@ -35,10 +36,11 @@ fun ReportsScreen(spesaRepository: SpesaRepository) {
     }
 
     val totaleMese = monthSpese.sumOf { it.importo }
-    val totaleCC = monthSpese.filter { it.metodoPagamento == "CC (Carta)" || it.metodoPagamento == "CC" }.sumOf { it.importo }
-    val totaleCash = monthSpese.filter { it.metodoPagamento == "Contanti" }.sumOf { it.importo }
-    val totaleCartaCarburante = monthSpese.filter { it.metodoPagamento == "Carta Carburante" }.sumOf { it.importo }
-    val totaleTelepass = monthSpese.filter { it.categoria == "TELEPASS" }.sumOf { it.importo }
+    fun totalOf(predicate: (Spesa) -> Boolean) = monthSpese.filter(predicate).sumOf { it.importo }
+    val totaleCC = totalOf { it.metodoPagamento == ExpenseCategories.LABEL_CC || it.metodoPagamento == ExpenseCategories.LABEL_CC_LEGACY }
+    val totaleCash = totalOf { it.metodoPagamento == ExpenseCategories.LABEL_CASH }
+    val totaleCartaCarburante = totalOf { it.metodoPagamento == ExpenseCategories.LABEL_FUEL_CARD }
+    val totaleTelepass = totalOf { it.categoria == ExpenseCategories.KEY_TELEPASS }
 
     Column(
         modifier = Modifier
@@ -49,42 +51,9 @@ fun ReportsScreen(spesaRepository: SpesaRepository) {
         Text("📊 Riepilogo & Report Spese", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(12.dp))
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            OutlinedTextField(
-                value = selectedYear.toString(),
-                onValueChange = { it.toIntOrNull()?.let { y -> selectedYear = y } },
-                label = { Text("Anno") },
-                modifier = Modifier.weight(1f)
-            )
-
-            var expandedMonth by remember { mutableStateOf(false) }
-            Box(modifier = Modifier.weight(1f)) {
-                OutlinedButton(
-                    onClick = { expandedMonth = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(DocumentGenerator.MONTH_NAMES[selectedMonth - 1])
-                }
-                DropdownMenu(
-                    expanded = expandedMonth,
-                    onDismissRequest = { expandedMonth = false }
-                ) {
-                    DocumentGenerator.MONTH_NAMES.forEachIndexed { index, name ->
-                        DropdownMenuItem(
-                            text = { Text(name) },
-                            onClick = {
-                                selectedMonth = index + 1
-                                expandedMonth = false
-                            }
-                        )
-                    }
-                }
-            }
-        }
+        YearSelector(year = selectedYear, onYearSelected = { selectedYear = it })
+        Spacer(modifier = Modifier.height(8.dp))
+        MonthSelector(month = selectedMonth, onMonthSelected = { selectedMonth = it })
 
         Spacer(modifier = Modifier.height(16.dp))
 

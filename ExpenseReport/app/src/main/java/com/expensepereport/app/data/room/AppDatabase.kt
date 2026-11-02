@@ -10,6 +10,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun spesaDao(): SpesaDao
 
     companion object {
+        const val DATABASE_NAME = "expense_report.db"
+
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
@@ -18,10 +20,11 @@ abstract class AppDatabase : RoomDatabase() {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
-                    "expense_report.db"
+                    DATABASE_NAME
                 )
-                .fallbackToDestructiveMigration()
-                .build()
+                    // No fallbackToDestructiveMigration(): a schema change without a migration
+                    // must fail loudly instead of silently deleting all the expenses
+                    .build()
                 INSTANCE = instance
                 instance
             }
