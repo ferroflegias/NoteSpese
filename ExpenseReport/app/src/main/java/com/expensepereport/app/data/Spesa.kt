@@ -1,41 +1,25 @@
 package com.expensepereport.app.data
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-
-@Serializable
+/** An expense as used by the UI and the document generators. */
 data class Spesa(
+    /** Null for an expense not yet saved. */
     val id: Long? = null,
     val data: String, // YYYY-MM-DD
     val destinazione: String? = null,
     val scopo: String? = null,
     val categoria: String,
-    @SerialName("metodo_pagamento")
     val metodoPagamento: String? = null,
     val importo: Double = 0.0,
     val km: Double = 0.0,
     val note: String? = null,
-    @SerialName("allegato_path")
     val allegatoPath: String? = null,
-    @SerialName("valuta_straniera")
-    val valutaStraniera: Int = 0,
-    @SerialName("created_at")
+    val valutaStraniera: Boolean = false,
     val createdAt: String? = null
 )
 
-@Serializable
-data class SpesaInsert(
-    val data: String,
-    val destinazione: String? = null,
-    val scopo: String? = null,
-    val categoria: String,
-    @SerialName("metodo_pagamento")
-    val metodoPagamento: String? = null,
-    val importo: Double = 0.0,
-    val km: Double = 0.0,
-    val note: String? = null,
-    @SerialName("allegato_path")
-    val allegatoPath: String? = null,
-    @SerialName("valuta_straniera")
-    val valutaStraniera: Int = 0
-)
+/** Year and month folders ("AAAA", "MM") used to organise the attachments of an expense date. */
+fun attachmentFolderParts(dataSpesa: String): Pair<String, String> {
+    val year = if (dataSpesa.length >= 4) dataSpesa.substring(0, 4) else "0000"
+    val month = if (dataSpesa.length >= 7) dataSpesa.substring(5, 7) else "00"
+    return year to month
+}

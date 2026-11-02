@@ -24,7 +24,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 
-var lastExcelError: String? = null
+/** Period exported to Excel: it also determines the name of the generated file. */
+enum class ExcelExportMode { SINGLE_MONTH, MONTH_RANGE, FULL_YEAR }
 
 object DocumentGenerator {
 
@@ -90,91 +91,83 @@ object DocumentGenerator {
         cell.cellStyle = newStyle
     }
 
+    /**
+     * Fills a copy of the Excel template with the expenses of the selected months.
+     * On failure the result holds the exception, whose message is shown to the user.
+     */
     suspend fun generateExcel(
         context: Context,
         spesaRepository: SpesaRepository,
         templateFile: File,
         year: Int,
-        mode: String, // "singolo", "range", "anno"
+        mode: ExcelExportMode,
         startMonth: Int,
         endMonth: Int
-    ): File? {
-        lastExcelError = null
-        if (!templateFile.exists()) {
-            lastExcelError = "File modello non esistente in storage locale"
-            return null
-        }
+    ): Result<File> = runCatching {
+        val workbook = templateFile.inputStream().use { XSSFWorkbook(it) }
 
-        return try {
-            val workbook = templateFile.inputStream().use { XSSFWorkbook(it) }
+        val rowOffset = 4
+        val orangeColorIndex = IndexedColors.GOLD.index
+        val yellowColorIndex = IndexedColors.YELLOW.index
 
-            val rowOffset = 4
-            val orangeColorIndex = IndexedColors.GOLD.index
-            val yellowColorIndex = IndexedColors.YELLOW.index
+        for (m in startMonth..endMonth) {
+            val sheet = workbook.getSheet(MONTH_NAMES[m - 1]) ?: continue
 
-            for (m in startMonth..endMonth) {
-                val sheet = workbook.getSheet(MONTH_NAMES[m - 1]) ?: continue
+            for (spesa in spesaRepository.getSpeseForMonth(year, m)) {
+                val dateParts = spesa.data.split("-")
+                if (dateParts.size < 3) continue
+                val day = dateParts[2].toIntOrNull() ?: continue
+                val targetRowIdx = day + rowOffset
+                val row = sheet.getRow(targetRowIdx) ?: sheet.createRow(targetRowIdx)
 
-                for (spesa in spesaRepository.getSpeseForMonth(year, m)) {
-                    val dateParts = spesa.data.split("-")
-                    if (dateParts.size < 3) continue
-                    val day = dateParts[2].toIntOrNull() ?: continue
-                    val targetRowIdx = day + rowOffset
-                    val row = sheet.getRow(targetRowIdx) ?: sheet.createRow(targetRowIdx)
+                spesa.destinazione?.let { appendUniqueText(row, 2, it, "\\") } // Column C
+                spesa.scopo?.let { appendUniqueText(row, 3, it, "\\") }        // Column D
+                spesa.note?.let { appendUniqueText(row, 14, it, "; ") }        // Column O
 
-                    spesa.destinazione?.let { appendUniqueText(row, 2, it, "\\") } // Column C
-                    spesa.scopo?.let { appendUniqueText(row, 3, it, "\\") }        // Column D
-                    spesa.note?.let { appendUniqueText(row, 14, it, "; ") }        // Column O
+                // Value in specific Category column
+                val colIdx = CATEGORY_COLUMN_MAP[spesa.categoria]
+                if (colIdx != null && spesa.importo > 0) {
+                    val cell = row.getCell(colIdx) ?: row.createCell(colIdx)
+                    val impVal = formatAmount(spesa.importo)
 
-                    // Value in specific Category column
-                    val colIdx = CATEGORY_COLUMN_MAP[spesa.categoria]
-                    if (colIdx != null && spesa.importo > 0) {
-                        val cell = row.getCell(colIdx) ?: row.createCell(colIdx)
-                        val impVal = formatAmount(spesa.importo)
+                    val currFillColor = cell.cellStyle?.fillForegroundColor ?: 0
+                    val isAlreadyHighlighted = currFillColor == orangeColorIndex || currFillColor == yellowColorIndex
+                    val isForeign = spesa.valutaStraniera
 
-                        val currFillColor = cell.cellStyle?.fillForegroundColor ?: 0
-                        val isAlreadyHighlighted = currFillColor == orangeColorIndex || currFillColor == yellowColorIndex
-                        val isForeign = spesa.valutaStraniera == 1
+                    val existingFormula = when {
+                        cell.cellType == CellType.NUMERIC -> formatAmount(cell.numericCellValue)
+                        cell.cellType == CellType.FORMULA -> cell.cellFormula
+                        else -> null
+                    }
 
-                        val existingFormula = when {
-                            cell.cellType == CellType.NUMERIC -> formatAmount(cell.numericCellValue)
-                            cell.cellType == CellType.FORMULA -> cell.cellFormula
-                            else -> null
-                        }
-
-                        if (existingFormula == null || getCellText(cell).isEmpty()) {
-                            // Empty (or text) cell: first expense of the day for this category
-                            cell.setCellValue(impVal.toDouble())
-                            if (isForeign) highlightCell(workbook, cell, orangeColorIndex)
-                        } else {
-                            // Several expenses on the same day: keep them visible as a sum formula
-                            cell.cellFormula = "$existingFormula+$impVal"
-                            if (isForeign || isAlreadyHighlighted) highlightCell(workbook, cell, yellowColorIndex)
-                        }
+                    if (existingFormula == null || getCellText(cell).isEmpty()) {
+                        // Empty (or text) cell: first expense of the day for this category
+                        cell.setCellValue(impVal.toDouble())
+                        if (isForeign) highlightCell(workbook, cell, orangeColorIndex)
+                    } else {
+                        // Several expenses on the same day: keep them visible as a sum formula
+                        cell.cellFormula = "$existingFormula+$impVal"
+                        if (isForeign || isAlreadyHighlighted) highlightCell(workbook, cell, yellowColorIndex)
                     }
                 }
             }
-
-            // Template totals are formulas: make Excel recompute them when the file is opened
-            workbook.setForceFormulaRecalculation(true)
-
-            val filename = when (mode) {
-                "anno" -> "Note_Spese_Anno_${year}.xlsx"
-                "range" -> "Note_Spese_${MONTH_NAMES[startMonth - 1]}_${MONTH_NAMES[endMonth - 1]}_${year}.xlsx"
-                else -> "Note_Spese_${MONTH_NAMES[startMonth - 1]}_${year}.xlsx"
-            }
-
-            val outFile = File(context.cacheDir, filename)
-            workbook.use { wb ->
-                FileOutputStream(outFile).use { wb.write(it) }
-            }
-            outFile
-        } catch (t: Throwable) {
-            t.printStackTrace()
-            lastExcelError = "${t.javaClass.simpleName}: ${t.message}"
-            null
         }
-    }
+
+        // Template totals are formulas: make Excel recompute them when the file is opened
+        workbook.setForceFormulaRecalculation(true)
+
+        val filename = when (mode) {
+            ExcelExportMode.FULL_YEAR -> "Note_Spese_Anno_${year}.xlsx"
+            ExcelExportMode.MONTH_RANGE -> "Note_Spese_${MONTH_NAMES[startMonth - 1]}_${MONTH_NAMES[endMonth - 1]}_${year}.xlsx"
+            ExcelExportMode.SINGLE_MONTH -> "Note_Spese_${MONTH_NAMES[startMonth - 1]}_${year}.xlsx"
+        }
+
+        val outFile = File(context.cacheDir, filename)
+        workbook.use { wb ->
+            FileOutputStream(outFile).use { wb.write(it) }
+        }
+        outFile
+    }.onFailure { it.printStackTrace() }
 
     /**
      * Builds a PDF with up to 4 attachments per page; PDF attachments are appended at the end.

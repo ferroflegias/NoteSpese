@@ -21,7 +21,6 @@ import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.DropboxService
 import com.expensepereport.app.data.Spesa
-import com.expensepereport.app.data.SpesaInsert
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.util.formatAmount
 import com.expensepereport.app.util.isValidIsoDate
@@ -133,6 +132,7 @@ fun RecordsScreen(
         var isUpdating by remember(spesa.id) { mutableStateOf(false) }
         var dialogError by remember(spesa.id) { mutableStateOf("") }
         var isOpeningAttachment by remember(spesa.id) { mutableStateOf(false) }
+        var confirmDelete by remember(spesa.id) { mutableStateOf(false) }
 
         val imagePicker = rememberLauncherForActivityResult(
             contract = ActivityResultContracts.GetContent()
@@ -296,7 +296,6 @@ fun RecordsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        val id = spesa.id ?: return@Button
                         if (!isValidIsoDate(editDate)) {
                             dialogError = "⚠️ Data non valida! Usa il formato AAAA-MM-GG."
                             return@Button
@@ -321,19 +320,16 @@ fun RecordsScreen(
                                     finalAttachmentUrl = savedUrl
                                 }
 
-                                val updatedSpesa = SpesaInsert(
-                                    data = editDate,
-                                    destinazione = editDest.ifBlank { null },
-                                    scopo = editScopo.ifBlank { null },
-                                    categoria = spesa.categoria,
-                                    metodoPagamento = spesa.metodoPagamento,
-                                    importo = importo,
-                                    km = spesa.km,
-                                    note = editNote.ifBlank { null },
-                                    allegatoPath = finalAttachmentUrl,
-                                    valutaStraniera = spesa.valutaStraniera
+                                spesaRepository.updateSpesa(
+                                    spesa.copy(
+                                        data = editDate,
+                                        destinazione = editDest.ifBlank { null },
+                                        scopo = editScopo.ifBlank { null },
+                                        importo = importo,
+                                        note = editNote.ifBlank { null },
+                                        allegatoPath = finalAttachmentUrl
+                                    )
                                 )
-                                spesaRepository.updateSpesa(id, updatedSpesa)
 
                                 // Remove the old attachment only once the record points to the new one
                                 if (finalAttachmentUrl != spesa.allegatoPath) {
@@ -357,7 +353,27 @@ fun RecordsScreen(
             },
             dismissButton = {
                 TextButton(
-                    onClick = {
+                    onClick = { confirmDelete = true },
+                    enabled = !isUpdating
+                ) {
+                    Text("Elimina", color = MaterialTheme.colorScheme.error)
+                }
+            }
+        )
+
+        if (confirmDelete) {
+            AlertDialog(
+                onDismissRequest = { confirmDelete = false },
+                title = { Text("Eliminare la spesa #${spesa.id}?") },
+                text = {
+                    Text(
+                        if (spesa.allegatoPath.isNullOrBlank()) "L'operazione non può essere annullata."
+                        else "Verrà eliminato anche l'allegato. L'operazione non può essere annullata."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmDelete = false
                         val id = spesa.id ?: return@TextButton
                         scope.launch {
                             isUpdating = true
@@ -373,12 +389,14 @@ fun RecordsScreen(
                                 isUpdating = false
                             }
                         }
-                    },
-                    enabled = !isUpdating
-                ) {
-                    Text("Elimina", color = MaterialTheme.colorScheme.error)
+                    }) {
+                        Text("Elimina", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDelete = false }) { Text("Annulla") }
                 }
-            }
-        )
+            )
+        }
     }
 }

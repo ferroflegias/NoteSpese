@@ -64,7 +64,7 @@ class MainActivity : ComponentActivity() {
 
         val settingsRepository = AppSettingsRepository(applicationContext)
         val spesaRepository = SpesaRepository(applicationContext)
-        val dropboxService = DropboxService(applicationContext, settingsRepository)
+        val dropboxService = DropboxService(settingsRepository)
         val attachmentRepository = AttachmentRepository(applicationContext, dropboxService)
 
         lifecycleScope.launch {

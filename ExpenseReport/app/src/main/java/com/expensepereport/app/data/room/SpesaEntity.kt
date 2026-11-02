@@ -25,8 +25,7 @@ data class SpesaEntity(
     @ColumnInfo(name = "created_at")
     val createdAt: String? = null
 ) {
-    fun toSpesa(): Spesa {
-        return Spesa(
+    fun toSpesa() = Spesa(
             id = id,
             data = data,
             destinazione = destinazione,
@@ -37,8 +36,24 @@ data class SpesaEntity(
             km = km,
             note = note,
             allegatoPath = allegatoPath,
-            valutaStraniera = valutaStraniera,
+            valutaStraniera = valutaStraniera == 1,
             createdAt = createdAt
+        )
+
+    companion object {
+        fun fromSpesa(spesa: Spesa) = SpesaEntity(
+            id = spesa.id ?: 0,
+            data = spesa.data,
+            destinazione = spesa.destinazione,
+            scopo = spesa.scopo,
+            categoria = spesa.categoria,
+            metodoPagamento = spesa.metodoPagamento,
+            importo = spesa.importo,
+            km = spesa.km,
+            note = spesa.note,
+            allegatoPath = spesa.allegatoPath,
+            valutaStraniera = if (spesa.valutaStraniera) 1 else 0,
+            createdAt = spesa.createdAt
         )
     }
 }

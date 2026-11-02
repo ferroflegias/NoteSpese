@@ -9,14 +9,14 @@ import com.dropbox.core.v2.files.FileMetadata
 import com.dropbox.core.v2.files.ListFolderErrorException
 import com.dropbox.core.v2.files.WriteMode
 import com.expensepereport.app.BuildConfig
+import com.expensepereport.app.util.fileTimestamp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
+import java.io.InputStream
 import java.util.Date
-import java.util.Locale
 
 /** A database backup file stored in the app folder on Dropbox. */
 data class BackupEntry(
@@ -28,17 +28,14 @@ data class BackupEntry(
 
 /**
  * Stores attachments and database backups in the app's own folder on Dropbox
- * (Dropbox/Apps/<nome app>/), using OAuth 2 PKCE: no client secret, no SHA-1 fingerprint.
+ * (Dropbox/App/<nome app>/), using OAuth 2 PKCE: no client secret, no SHA-1 fingerprint.
  *
  * Attachments are saved in the database as "dropbox:/Allegati/AAAA/MM/<file>".
  */
-class DropboxService(
-    private val context: Context,
-    private val settingsRepository: AppSettingsRepository
-) {
+class DropboxService(private val settingsRepository: AppSettingsRepository) {
 
     companion object {
-        const val PATH_PREFIX = "dropbox:"
+        private const val PATH_PREFIX = "dropbox:"
         private const val ATTACHMENTS_FOLDER = "/Allegati"
         private const val BACKUPS_FOLDER = "/Backups"
         private const val BACKUP_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
@@ -50,7 +47,7 @@ class DropboxService(
             "files.content.write"
         )
 
-        val appKey: String get() = BuildConfig.DROPBOX_APP_KEY
+        private val appKey: String get() = BuildConfig.DROPBOX_APP_KEY
 
         /** False when the APK was built without DROPBOX_APP_KEY. */
         val isConfigured: Boolean get() = appKey.isNotBlank()
@@ -119,17 +116,10 @@ class DropboxService(
     ): String? = withContext(Dispatchers.IO) {
         val client = client() ?: return@withContext null
         try {
-            val year = if (dataSpesa.length >= 4) dataSpesa.substring(0, 4) else "2026"
-            val month = if (dataSpesa.length >= 7) dataSpesa.substring(5, 7) else "01"
-            val nowStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val path = "$ATTACHMENTS_FOLDER/$year/$month/rec_${dataSpesa}_$nowStr.$extension"
+            val (year, month) = attachmentFolderParts(dataSpesa)
+            val path = "$ATTACHMENTS_FOLDER/$year/$month/rec_${dataSpesa}_${fileTimestamp()}.$extension"
 
-            val metadata = fileBytes.inputStream().use { input ->
-                client.files().uploadBuilder(path)
-                    .withMode(WriteMode.ADD)
-                    .withAutorename(true)
-                    .uploadAndFinish(input)
-            }
+            val metadata = fileBytes.inputStream().use { input -> upload(client, path, input) }
             PATH_PREFIX + (metadata.pathDisplay ?: path)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -140,14 +130,8 @@ class DropboxService(
     suspend fun uploadDatabaseBackup(dbFile: File): Boolean = withContext(Dispatchers.IO) {
         val client = client() ?: return@withContext false
         try {
-            val nowStr = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-            val path = "$BACKUPS_FOLDER/expense_report_backup_$nowStr.db"
-            dbFile.inputStream().use { input ->
-                client.files().uploadBuilder(path)
-                    .withMode(WriteMode.ADD)
-                    .withAutorename(true)
-                    .uploadAndFinish(input)
-            }
+            val path = "$BACKUPS_FOLDER/expense_report_backup_${fileTimestamp()}.db"
+            dbFile.inputStream().use { input -> upload(client, path, input) }
             cleanupOldBackups(client)
             true
         } catch (e: Exception) {
@@ -155,6 +139,13 @@ class DropboxService(
             false
         }
     }
+
+    /** Uploads a new file; an existing file with the same name is never overwritten. */
+    private fun upload(client: DbxClientV2, path: String, input: InputStream): FileMetadata =
+        client.files().uploadBuilder(path)
+            .withMode(WriteMode.ADD)
+            .withAutorename(true)
+            .uploadAndFinish(input)
 
     private fun listBackupFiles(client: DbxClientV2): List<FileMetadata> {
         val files = mutableListOf<FileMetadata>()

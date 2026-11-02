@@ -12,8 +12,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.expensepereport.app.data.AppSettingsRepository
@@ -22,6 +22,7 @@ import com.expensepereport.app.data.DropboxService
 import com.expensepereport.app.data.ImportResult
 import com.expensepereport.app.data.SpesaRepository
 import kotlinx.coroutines.launch
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
 
@@ -52,6 +53,7 @@ fun SettingsScreen(
 
     var availableBackups by remember { mutableStateOf<List<BackupEntry>>(emptyList()) }
     var showRestoreDialog by remember { mutableStateOf(false) }
+    var showImportConfirm by remember { mutableStateOf(false) }
 
     // Dropbox returns to the app after the authorisation: pick up the credential on resume
     DisposableEffect(lifecycleOwner) {
@@ -91,19 +93,13 @@ fun SettingsScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            try {
-                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                if (bytes != null) {
-                    val success = settingsRepository.saveExcelTemplate(bytes)
-                    if (success) {
-                        hasTemplate = true
-                        statusMessage = "✅ Modello Excel salvato con successo!"
-                    } else {
-                        statusMessage = "Errore durante il salvataggio del modello Excel."
-                    }
+            scope.launch {
+                if (settingsRepository.saveExcelTemplate(uri)) {
+                    hasTemplate = true
+                    statusMessage = "✅ Modello Excel salvato con successo!"
+                } else {
+                    statusMessage = "❌ Impossibile salvare il modello: il file non è leggibile o non è un file Excel .xlsx."
                 }
-            } catch (e: Exception) {
-                statusMessage = "Errore lettura file: ${e.message}"
             }
         }
     }
@@ -319,8 +315,9 @@ fun SettingsScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         OutlinedButton(
-            onClick = { dbImportLauncher.launch("*/*") },
-            modifier = Modifier.fillMaxWidth()
+            onClick = { showImportConfirm = true },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = !isPerformingAction
         ) {
             Text("📥 Importa File Database (.db / .json)")
         }
@@ -353,6 +350,25 @@ fun SettingsScreen(
         }
     }
 
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false },
+            title = { Text("Importare un database?") },
+            text = { Text("⚠️ Tutte le spese registrate nell'app verranno sostituite con quelle del file selezionato (.db o .json).") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    dbImportLauncher.launch("*/*")
+                }) {
+                    Text("Scegli file")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false }) { Text("Annulla") }
+            }
+        )
+    }
+
     // Restore Backup Dialog
     if (showRestoreDialog) {
         AlertDialog(
@@ -370,7 +386,7 @@ fun SettingsScreen(
                                 scope.launch {
                                     isPerformingAction = true
                                     statusMessage = "Scaricamento e ripristino backup in corso..."
-                                    val tempFile = java.io.File(context.cacheDir, "temp_restore.db")
+                                    val tempFile = File(context.cacheDir, "temp_restore.db")
                                     try {
                                         val downloaded = dropboxService.downloadBackup(backup.path, tempFile)
                                         statusMessage = if (!downloaded) {

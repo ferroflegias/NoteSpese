@@ -2,8 +2,8 @@ package com.expensepereport.app.data
 
 import android.content.Context
 import android.net.Uri
-import androidx.core.content.FileProvider
 import com.expensepereport.app.util.ImageUtils
+import com.expensepereport.app.util.contentUriFor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -18,8 +18,11 @@ class AttachmentRepository(
 ) {
 
     companion object {
-        const val LOCAL_ATTACHMENTS_FOLDER = "NoteSpese_Allegati"
+        private const val LOCAL_ATTACHMENTS_FOLDER = "NoteSpese_Allegati"
         private const val VIEW_CACHE_FOLDER = "allegati_view"
+
+        /** Prefixes of the temporary photos written to the cache by the camera and the crop dialog. */
+        const val CAMERA_FILE_PREFIX = "camera_photo_"
         const val CROPPED_FILE_PREFIX = "cropped_rec_"
     }
 
@@ -56,25 +59,20 @@ class AttachmentRepository(
         }
         withContext(Dispatchers.IO) {
             try {
-                val file = File(path.removePrefix("file://"))
-                if (file.isAbsolute && file.exists()) file.delete()
+                localFile(path)?.delete()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }
     }
 
-    /** Reads an attachment stored either locally or on Dropbox. */
+    /** Reads an attachment stored either locally or on Dropbox. Old Google Drive links return null. */
     suspend fun readAttachmentBytes(path: String): ByteArray? {
         if (DropboxService.isDropboxPath(path)) {
             return dropboxService.downloadFileBytes(path)
         }
-        val localFile = File(path.removePrefix("file://"))
-        if (localFile.isAbsolute && localFile.exists()) {
-            return withContext(Dispatchers.IO) { localFile.readBytes() }
-        }
-        // Old Google Drive links can only be opened in the browser
-        return null
+        val file = localFile(path) ?: return null
+        return withContext(Dispatchers.IO) { file.readBytes() }
     }
 
     /**
@@ -94,21 +92,34 @@ class AttachmentRepository(
                 }
             } ?: return null
         } else {
-            File(path.removePrefix("file://")).takeIf { it.isAbsolute && it.exists() } ?: return null
+            localFile(path) ?: return null
         }
         return try {
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            context.contentUriFor(file)
         } catch (e: Exception) {
             e.printStackTrace()
             null
         }
     }
 
+    /**
+     * Deletes the temporary photos taken with the camera or produced by the crop dialog:
+     * once the expense is saved they have been copied (to Dropbox or to the private storage).
+     */
+    suspend fun clearTemporaryPhotos() = withContext(Dispatchers.IO) {
+        context.cacheDir.listFiles()
+            ?.filter { it.name.startsWith(CAMERA_FILE_PREFIX) || it.name.startsWith(CROPPED_FILE_PREFIX) }
+            ?.forEach { it.delete() }
+    }
+
+    /** The local file of an attachment saved on the device, or null if it does not exist. */
+    private fun localFile(path: String): File? =
+        File(path.removePrefix("file://")).takeIf { it.isAbsolute && it.exists() }
+
     private suspend fun saveLocally(fileBytes: ByteArray, dataSpesa: String, ext: String): String? =
         withContext(Dispatchers.IO) {
             try {
-                val year = if (dataSpesa.length >= 4) dataSpesa.substring(0, 4) else "2026"
-                val month = if (dataSpesa.length >= 7) dataSpesa.substring(5, 7) else "01"
+                val (year, month) = attachmentFolderParts(dataSpesa)
                 val localFolder = File(context.filesDir, "$LOCAL_ATTACHMENTS_FOLDER/$year/$month")
                 localFolder.mkdirs()
                 val file = File(localFolder, "rec_${dataSpesa}_${System.currentTimeMillis()}.$ext")

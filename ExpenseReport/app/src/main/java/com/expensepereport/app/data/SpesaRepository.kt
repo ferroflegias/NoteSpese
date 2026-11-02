@@ -33,49 +33,22 @@ class SpesaRepository(private val context: Context) {
         spesaDao.getSpeseForRange(startDate, endDate).map { it.toSpesa() }
     }
 
-    suspend fun insertSpesa(spesaInsert: SpesaInsert): Long = withContext(Dispatchers.IO) {
+    suspend fun insertSpesa(spesa: Spesa): Long = withContext(Dispatchers.IO) {
         val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
-        val entity = SpesaEntity(
-            data = spesaInsert.data,
-            destinazione = spesaInsert.destinazione,
-            scopo = spesaInsert.scopo,
-            categoria = spesaInsert.categoria,
-            metodoPagamento = spesaInsert.metodoPagamento,
-            importo = spesaInsert.importo,
-            km = spesaInsert.km,
-            note = spesaInsert.note,
-            allegatoPath = spesaInsert.allegatoPath,
-            valutaStraniera = spesaInsert.valutaStraniera,
-            createdAt = nowStr
-        )
-        spesaDao.insert(entity)
+        spesaDao.insert(SpesaEntity.fromSpesa(spesa.copy(id = null, createdAt = nowStr)))
     }
 
-    suspend fun updateSpesa(id: Long, spesaInsert: SpesaInsert): Boolean = withContext(Dispatchers.IO) {
-        val existing = spesaDao.getSpesaById(id) ?: return@withContext false
-        val updated = existing.copy(
-            data = spesaInsert.data,
-            destinazione = spesaInsert.destinazione,
-            scopo = spesaInsert.scopo,
-            categoria = spesaInsert.categoria,
-            metodoPagamento = spesaInsert.metodoPagamento,
-            importo = spesaInsert.importo,
-            km = spesaInsert.km,
-            note = spesaInsert.note,
-            allegatoPath = spesaInsert.allegatoPath ?: existing.allegatoPath,
-            valutaStraniera = spesaInsert.valutaStraniera
-        )
-        spesaDao.update(updated)
-        true
+    /** Saves the changes to an existing expense (identified by [Spesa.id]). */
+    suspend fun updateSpesa(spesa: Spesa) = withContext(Dispatchers.IO) {
+        require(spesa.id != null) { "Spesa senza id" }
+        spesaDao.update(SpesaEntity.fromSpesa(spesa))
     }
 
     suspend fun deleteSpesa(id: Long) = withContext(Dispatchers.IO) {
         spesaDao.deleteById(id)
     }
 
-    fun getDatabaseFile(): File {
-        return context.getDatabasePath("expense_report.db")
-    }
+    private fun getDatabaseFile(): File = context.getDatabasePath(AppDatabase.DATABASE_NAME)
 
     /**
      * Room uses WAL journaling: the latest writes may still live in the -wal file.

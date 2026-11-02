@@ -4,7 +4,7 @@
 
 Le spese vengono salvate **in locale sul dispositivo** (database SQLite tramite Room), mentre allegati e backup del database vengono archiviati nel **Dropbox** personale dell'utente (in una cartella riservata all'app). L'app compila automaticamente il **modello Excel ufficiale** delle note spese e genera un **PDF cumulativo degli allegati in scala di grigi** pronto per la stampa.
 
-> ℹ️ Le versioni precedenti del progetto erano una WebApp in Python/Streamlit con database Supabase. Vedi la sezione [Versione legacy (WebApp Streamlit)](#-versione-legacy-webapp-streamlit) più in basso.
+> ℹ️ Le versioni precedenti del progetto erano una WebApp in Python/Streamlit con database Supabase: il codice è stato rimosso dal repository ma resta consultabile nella cronologia git.
 
 ---
 
@@ -15,13 +15,13 @@ L'app è organizzata in 5 schede accessibili dalla barra di navigazione inferior
 * **➕ Spesa — Inserimento rapido**:
   * Allegato da **fotocamera**, **galleria / file** oppure **file PDF**.
   * **Ritaglio interattivo** della foto dello scontrino prima del salvataggio.
-  * **OCR on-device** (Google ML Kit) su foto e sulla prima pagina dei PDF: precompila data, esercente, importo, categoria e metodo di pagamento suggeriti.
+  * **OCR on-device** (Google ML Kit, funziona anche offline) su foto e sulla prima pagina dei PDF: precompila data, esercente, importo, categoria e metodo di pagamento suggeriti.
   * Categorie predefinite: *Ristoranti/Alberghi/Bar, Parcheggi/Taxi/Treni/Voli, Carburante, Telepass, Nolo, Altro*.
   * Metodi di pagamento: *Carta di credito, Contanti, Carta Carburante*; flag per le spese in **valuta estera**.
 
 * **📑 Registri — Consultazione e modifica**:
   * Elenco di tutte le spese registrate, con indicazione degli allegati presenti.
-  * Modifica dei dati, sostituzione dell'allegato, apertura dell'allegato (scaricato da Dropbox se necessario) ed eliminazione (con rimozione contestuale del file da Dropbox).
+  * Modifica dei dati, sostituzione dell'allegato, apertura dell'allegato (scaricato da Dropbox se necessario) ed eliminazione, previa conferma, con rimozione contestuale del file da Dropbox.
 
 * **📊 Report — KPI mensili**:
   * Totale del mese e totali per metodo di pagamento (Carta, Contanti, Carta Carburante, Telepass).
@@ -35,7 +35,7 @@ L'app è organizzata in 5 schede accessibili dalla barra di navigazione inferior
 * **⚙️ Settings — Account, backup e modello**:
   * Collegamento a **Dropbox** con un tocco (nessuna configurazione SHA-1 o Google Cloud).
   * **Backup automatico giornaliero** del database su Dropbox (orario configurabile, default 02:00), backup manuale e **ripristino** da un backup esistente. I backup più vecchi di 30 giorni vengono eliminati automaticamente.
-  * **Importazione** di un database esistente da file `.db` (SQLite) o `.json`.
+  * **Importazione** di un database esistente da file `.db` (SQLite) o `.json` (sostituisce tutte le spese presenti, previa conferma).
   * Caricamento del **modello Excel** (`Note spese 2026.xlsx`) usato per l'esportazione.
 
 ### Struttura su Dropbox
@@ -58,15 +58,15 @@ Se Dropbox non è collegato (o il caricamento fallisce) gli allegati vengono sal
 
 ## 📲 Installazione dell'APK
 
-1. Ottieni il file `PerExpenseReport-release.apk` compilandolo come descritto in [Compilazione dal codice sorgente](#️-compilazione-dal-codice-sorgente).
+1. Ottieni il file `PerExpenseReport-release.apk`: scaricalo dagli *Artifacts* dell'ultima run della GitHub Action **Build Android APK** (scheda *Actions* del repository) oppure compilalo come descritto in [Compilazione dal codice sorgente](#️-compilazione-dal-codice-sorgente).
 2. Sul telefono Android abilita l'installazione da **origini sconosciute** per l'app con cui apri il file (browser, file manager, Drive…).
 3. Apri l'APK e conferma l'installazione.
 4. Al primo avvio:
    * vai in **Settings → 🔗 Collega Dropbox** e autorizza l'accesso (si apre l'app Dropbox o il browser);
-   * carica il modello Excel con **📁 Carica Modello Excel (.xlsx)** (è disponibile nel repository: `Note spese 2026.xlsx`);
+   * carica il modello Excel con **📁 Carica Modello Excel (.xlsx)** (è disponibile nel repository: [`modello/Note spese 2026.xlsx`](modello/));
    * facoltativamente importa i dati esistenti con **📥 Importa File Database (.db / .json)**.
 
-**Requisiti**: Android 8.0 (API 26) o superiore. Permessi richiesti: Internet, Fotocamera, lettura memoria (solo Android ≤ 12).
+**Requisiti**: Android 8.0 (API 26) o superiore. Permessi richiesti: Internet e Fotocamera (i file si scelgono con il selettore di sistema, senza permessi di accesso alla memoria).
 
 ---
 
@@ -83,9 +83,27 @@ Se Dropbox non è collegato (o il caricamento fallisce) gli allegati vengono sal
 
 ---
 
+## 📂 Struttura del repository
+
+```
+NoteSpese/
+├── ExpenseReport/                 Progetto Android (Gradle)
+│   └── app/src/
+│       ├── main/java/com/expensepereport/app/
+│       │   ├── MainActivity.kt    Navigazione tra le 5 schede
+│       │   ├── data/              Database Room, Dropbox, allegati, impostazioni, categorie
+│       │   ├── ui/                Schermate, ritaglio foto, componenti condivisi
+│       │   └── util/              Excel/PDF, OCR, immagini, backup pianificato, formati
+│       └── test/                  Test unitari (OCR, categorie, formati)
+├── modello/Note spese 2026.xlsx   Modello Excel da caricare nell'app
+└── .github/workflows/             Build e firma automatica dell'APK
+```
+
+---
+
 ## 🏗️ Compilazione dal codice sorgente
 
-Il progetto Android si trova nella cartella [`ExpenseReport/`](ExpenseReport/).
+Il progetto Android si trova nella cartella [`ExpenseReport/`](ExpenseReport/). Ogni push su `main` (o su un branch `claude/**`) che modifica l'app avvia la GitHub Action **Build Android APK**, che produce l'APK firmato scaricabile dalla sezione *Artifacts* della run.
 
 ### Prerequisiti
 
@@ -108,7 +126,9 @@ Il keystore e le relative password **non sono inclusi nel repository**. Per firm
    RELEASE_KEY_ALIAS=releaseKey
    RELEASE_KEY_PASSWORD=la_password_della_chiave
    ```
-   In alternativa puoi impostare le stesse chiavi come variabili d'ambiente (utile in CI).
+   In alternativa puoi impostare le stesse chiavi come variabili d'ambiente.
+3. Per la build automatica su GitHub crea in *Settings → Secrets and variables → Actions* i secret `RELEASE_KEYSTORE_BASE64` (il keystore codificato in base64, es. `base64 -w0 expense-release.keystore`), `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS` e `RELEASE_KEY_PASSWORD`. Senza questi secret la Action si interrompe con un errore esplicito.
+
 Se la configurazione è presente, sia la build di debug sia quella di release vengono firmate con questo keystore. Senza configurazione la build di debug usa la chiave di debug standard di Android e quella di release viene prodotta non firmata.
 
 > ⚠️ Conserva una copia di backup del keystore: senza lo stesso keystore non è possibile installare aggiornamenti sopra l'app esistente.
@@ -152,28 +172,6 @@ L'app usa OAuth 2 con **PKCE**: serve solo l'**App key** (pubblica), nessun clie
 L'app può restare in stato *Development*: è sufficiente per l'uso personale (fino a 500 utenti collegati). Se l'App key manca, l'APK funziona comunque ma il pulsante **Collega Dropbox** mostra un avviso e gli allegati restano sul telefono.
 
 > ℹ️ Gli allegati salvati dalle versioni precedenti come link Google Drive restano apribili nel browser dalla scheda **Registri**, ma non vengono inclusi nel PDF cumulativo: se servono, sostituiscili con **Sostituisci / Aggiungi Allegato**.
-
----
-
-## 🔄 Migrazione dati dalla vecchia WebApp (Supabase)
-
-Lo script [`migrate_supabase_to_sqlite.py`](migrate_supabase_to_sqlite.py) esporta i dati dalla vecchia installazione Supabase:
-
-```bash
-SUPABASE_URL="https://tuo-progetto.supabase.co" SUPABASE_KEY="la_tua_key" \
-  python3 migrate_supabase_to_sqlite.py
-```
-
-Lo script produce:
-
-* `expense_report_import.db` (SQLite) e `spese_backup.json` — da importare nell'app con **Settings → 📥 Importa File Database**;
-* gli allegati scaricati e già organizzati nella struttura `NoteSpese_Allegati/AAAA/MM/`.
-
----
-
-## 🗄️ Versione legacy (WebApp Streamlit)
-
-Nella radice del repository sono ancora presenti i file della precedente WebApp Python/Streamlit (`app.py`, `requirements.txt`, `packages.txt`), basata su database e storage **Supabase**. Questa versione **non è più sviluppata** ed è mantenuta solo come riferimento e per la migrazione dei dati: per l'uso quotidiano fare riferimento all'app Android.
 
 ---
 

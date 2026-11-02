@@ -9,17 +9,25 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.expensepereport.app.data.AppSettingsRepository
 import com.expensepereport.app.data.AttachmentRepository
 import com.expensepereport.app.data.SpesaRepository
+import com.expensepereport.app.ui.components.MonthSelector
+import com.expensepereport.app.ui.components.YearSelector
 import com.expensepereport.app.util.DocumentGenerator
-import com.expensepereport.app.util.lastExcelError
+import com.expensepereport.app.util.ExcelExportMode
+import com.expensepereport.app.util.contentUriFor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Calendar
+
+private val EXCEL_MODE_LABELS = listOf(
+    ExcelExportMode.SINGLE_MONTH to "Mese Singolo",
+    ExcelExportMode.MONTH_RANGE to "Range Mesi",
+    ExcelExportMode.FULL_YEAR to "Anno"
+)
 
 @Composable
 fun ExportScreen(
@@ -34,7 +42,7 @@ fun ExportScreen(
     var yearInput by remember { mutableStateOf(Calendar.getInstance().get(Calendar.YEAR)) }
     var pdfMonth by remember { mutableStateOf(currentMonth) }
 
-    var excelMode by remember { mutableStateOf("Mese Singolo") }
+    var excelMode by remember { mutableStateOf(ExcelExportMode.SINGLE_MONTH) }
     var excelMonthStart by remember { mutableStateOf(currentMonth) }
     var excelMonthEnd by remember { mutableStateOf(currentMonth) }
 
@@ -44,11 +52,7 @@ fun ExportScreen(
 
     fun shareFile(file: File, mimeType: String) {
         try {
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
+            val uri = context.contentUriFor(file)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -69,12 +73,7 @@ fun ExportScreen(
         Text("📁 Generazione & Esportazione Documenti", style = MaterialTheme.typography.headlineMedium)
         Spacer(modifier = Modifier.height(12.dp))
 
-        OutlinedTextField(
-            value = yearInput.toString(),
-            onValueChange = { it.toIntOrNull()?.let { y -> yearInput = y } },
-            label = { Text("Anno Esportazione") },
-            modifier = Modifier.fillMaxWidth()
-        )
+        YearSelector(year = yearInput, onYearSelected = { yearInput = it })
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
 
@@ -86,26 +85,26 @@ fun ExportScreen(
             Text("⚠️ Nessun modello Excel caricato nelle Impostazioni! Carica prima il file .xlsx nelle Impostazioni.", color = MaterialTheme.colorScheme.error)
         } else {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("Mese Singolo", "Range Mesi", "Anno").forEach { mode ->
+                EXCEL_MODE_LABELS.forEach { (mode, modeLabel) ->
                     FilterChip(
                         selected = excelMode == mode,
                         onClick = { excelMode = mode },
-                        label = { Text(mode) }
+                        label = { Text(modeLabel) }
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            if (excelMode == "Mese Singolo" || excelMode == "Range Mesi") {
+            if (excelMode != ExcelExportMode.FULL_YEAR) {
                 MonthSelector(
-                    label = if (excelMode == "Range Mesi") "Mese Inizio" else "Mese",
+                    label = if (excelMode == ExcelExportMode.MONTH_RANGE) "Mese Inizio" else "Mese",
                     month = excelMonthStart,
                     onMonthSelected = { excelMonthStart = it }
                 )
             }
 
-            if (excelMode == "Range Mesi") {
+            if (excelMode == ExcelExportMode.MONTH_RANGE) {
                 Spacer(modifier = Modifier.height(8.dp))
                 MonthSelector(
                     label = "Mese Fine",
@@ -126,38 +125,34 @@ fun ExportScreen(
                         }
 
                         isGeneratingExcel = true
-                        val modeCode = when (excelMode) {
-                            "Anno" -> "anno"
-                            "Range Mesi" -> "range"
-                            else -> "singolo"
-                        }
                         // A range selected "backwards" (end before start) would export nothing
-                        val (mStart, mEnd) = when (modeCode) {
-                            "anno" -> 1 to 12
-                            "range" -> minOf(excelMonthStart, excelMonthEnd) to maxOf(excelMonthStart, excelMonthEnd)
-                            else -> excelMonthStart to excelMonthStart
+                        val (mStart, mEnd) = when (excelMode) {
+                            ExcelExportMode.FULL_YEAR -> 1 to 12
+                            ExcelExportMode.MONTH_RANGE -> minOf(excelMonthStart, excelMonthEnd) to maxOf(excelMonthStart, excelMonthEnd)
+                            ExcelExportMode.SINGLE_MONTH -> excelMonthStart to excelMonthStart
                         }
 
-                        val excelFile = withContext(Dispatchers.IO) {
+                        val result = withContext(Dispatchers.IO) {
                             DocumentGenerator.generateExcel(
                                 context = context,
                                 spesaRepository = spesaRepository,
                                 templateFile = template,
                                 year = yearInput,
-                                mode = modeCode,
+                                mode = excelMode,
                                 startMonth = mStart,
                                 endMonth = mEnd
                             )
                         }
                         isGeneratingExcel = false
 
-                        if (excelFile != null && excelFile.exists()) {
-                            statusMessage = "✅ Excel generato! Apertura Share Sheet..."
-                            shareFile(excelFile, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                        } else {
-                            val errDetail = lastExcelError ?: "Errore sconosciuto"
-                            statusMessage = "❌ Errore durante la generazione dell'Excel: $errDetail"
-                        }
+                        result
+                            .onSuccess { excelFile ->
+                                statusMessage = "✅ Excel generato! Apertura Share Sheet..."
+                                shareFile(excelFile, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                            }
+                            .onFailure { e ->
+                                statusMessage = "❌ Errore durante la generazione dell'Excel: ${e.javaClass.simpleName}: ${e.message}"
+                            }
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -212,37 +207,6 @@ fun ExportScreen(
         if (statusMessage.isNotEmpty()) {
             Spacer(modifier = Modifier.height(16.dp))
             Text(statusMessage, style = MaterialTheme.typography.bodyMedium)
-        }
-    }
-}
-
-/**
- * Month picker as a drop-down list. It replaces a Slider whose float values (e.g. 9.9999995)
- * were truncated with toInt(), which made October impossible to select.
- */
-@Composable
-private fun MonthSelector(label: String, month: Int, onMonthSelected: (Int) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box(modifier = Modifier.fillMaxWidth()) {
-        OutlinedButton(
-            onClick = { expanded = true },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("$label: ${DocumentGenerator.MONTH_NAMES[month - 1]}  ▾")
-        }
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { expanded = false }
-        ) {
-            DocumentGenerator.MONTH_NAMES.forEachIndexed { index, name ->
-                DropdownMenuItem(
-                    text = { Text(name) },
-                    onClick = {
-                        onMonthSelected(index + 1)
-                        expanded = false
-                    }
-                )
-            }
         }
     }
 }

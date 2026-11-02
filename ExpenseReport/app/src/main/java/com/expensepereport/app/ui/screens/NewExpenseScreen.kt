@@ -16,14 +16,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import coil.compose.rememberAsyncImagePainter
 import com.expensepereport.app.data.AttachmentRepository
-import com.expensepereport.app.data.SpesaInsert
+import com.expensepereport.app.data.ExpenseCategories
+import com.expensepereport.app.data.Spesa
 import com.expensepereport.app.data.SpesaRepository
 import com.expensepereport.app.ui.CropImageDialog
 import com.expensepereport.app.util.OcrAnalyzer
 import com.expensepereport.app.util.OcrException
+import com.expensepereport.app.util.contentUriFor
 import com.expensepereport.app.util.formatAmount
 import com.expensepereport.app.util.isValidIsoDate
 import com.expensepereport.app.util.parseAmount
@@ -32,56 +33,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-
-private const val CATEGORY_RISTORANTI = "🍴🛌🏻🍺"
-private const val CATEGORY_PARCHEGGI = "🅿️🚕✈️🚅"
-private const val CATEGORY_CARBURANTE = "⛽"
-private const val CATEGORY_TELEPASS = "🛣️"
-private const val CATEGORY_NOLO = "Nolo 🚗"
-private const val CATEGORY_ALTRO = "Altro"
-
-private const val PAYMENT_CC = "💳"
-private const val PAYMENT_CASH = "💰"
-private const val PAYMENT_FUEL_CARD = "💳⛽"
-
-private val CATEGORY_OPTIONS = listOf(
-    CATEGORY_RISTORANTI, CATEGORY_PARCHEGGI, CATEGORY_CARBURANTE,
-    CATEGORY_TELEPASS, CATEGORY_NOLO, CATEGORY_ALTRO
-)
-private val PAYMENT_OPTIONS = listOf(PAYMENT_CC, PAYMENT_CASH, PAYMENT_FUEL_CARD)
-
-/** Maps the category suggested by the OCR to the chip shown in the UI. */
-private fun categoryFromOcr(suggestion: String): String = when (suggestion) {
-    "Bar/Rist/Alb" -> CATEGORY_RISTORANTI
-    "Parcheggio/Taxi" -> CATEGORY_PARCHEGGI
-    "Carburante" -> CATEGORY_CARBURANTE
-    "Telepass" -> CATEGORY_TELEPASS
-    "Nolo" -> CATEGORY_NOLO
-    else -> CATEGORY_ALTRO
-}
-
-private fun paymentFromOcr(suggestion: String): String = when (suggestion) {
-    "Contanti" -> PAYMENT_CASH
-    "Carta Carburante" -> PAYMENT_FUEL_CARD
-    else -> PAYMENT_CC
-}
-
-/** Database category key, matching the columns of the Excel template. */
-private fun categoryKey(category: String, payment: String): String = when (category) {
-    CATEGORY_RISTORANTI -> if (payment == PAYMENT_CC) "RISTORANTI_CC" else "RISTORANTI_CONTANTI"
-    CATEGORY_PARCHEGGI -> if (payment == PAYMENT_CC) "PARCHEGGI_CC" else "PARCHEGGI_CONTANTI"
-    CATEGORY_CARBURANTE -> if (payment == PAYMENT_FUEL_CARD) "CARBURANTE_CARTA" else "CARBURANTE_CC"
-    CATEGORY_TELEPASS -> "TELEPASS"
-    CATEGORY_NOLO -> "NOLO"
-    else -> "ALTRO"
-}
-
-private fun paymentLabel(category: String, payment: String): String? =
-    if (category == CATEGORY_TELEPASS) null else when (payment) {
-        PAYMENT_CC -> "CC (Carta)"
-        PAYMENT_CASH -> "Contanti"
-        else -> "Carta Carburante"
-    }
 
 @Composable
 fun NewExpenseScreen(
@@ -97,8 +48,8 @@ fun NewExpenseScreen(
     var cameraTempUri by remember { mutableStateOf<Uri?>(null) }
     var showPhotoOptionsDialog by remember { mutableStateOf(false) }
 
+    /** Photo being cropped: the crop dialog is open while it is not null. */
     var cropSourceUri by remember { mutableStateOf<Uri?>(null) }
-    var showCropDialog by remember { mutableStateOf(false) }
 
     var isAnalyzing by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
@@ -107,8 +58,8 @@ fun NewExpenseScreen(
     var destInput by remember { mutableStateOf("") }
     var scopoInput by remember { mutableStateOf("") }
 
-    var selectedCategory by remember { mutableStateOf(CATEGORY_RISTORANTI) }
-    var selectedPayment by remember { mutableStateOf(PAYMENT_CC) }
+    var selectedCategory by remember { mutableStateOf(ExpenseCategories.RISTORANTI) }
+    var selectedPayment by remember { mutableStateOf(ExpenseCategories.PAYMENT_CC) }
 
     var amountInput by remember { mutableStateOf("") }
     var isForeignCurrency by remember { mutableStateOf(false) }
@@ -137,8 +88,8 @@ fun NewExpenseScreen(
                 dateInput = ocrRes.dataStr
                 destInput = ocrRes.destinazione
                 if (ocrRes.importo > 0) amountInput = formatAmount(ocrRes.importo)
-                selectedCategory = categoryFromOcr(ocrRes.categoriaSuggerita)
-                selectedPayment = paymentFromOcr(ocrRes.pagamentoSuggerito)
+                selectedCategory = ExpenseCategories.categoryFromOcr(ocrRes.categoriaSuggerita)
+                selectedPayment = ExpenseCategories.paymentFromOcr(ocrRes.pagamentoSuggerito)
                 noteInput = ocrRes.noteExtracted
                 statusMessage = "✅ Dati estratti con successo tramite OCR ML Kit!"
             } else {
@@ -149,7 +100,6 @@ fun NewExpenseScreen(
 
     fun startCropFlow(sourceUri: Uri) {
         cropSourceUri = sourceUri
-        showCropDialog = true
     }
 
     val galleryPicker = rememberLauncherForActivityResult(
@@ -162,8 +112,8 @@ fun NewExpenseScreen(
 
     fun createTempImageUri(): Uri? {
         return try {
-            val tempFile = File.createTempFile("camera_photo_", ".jpg", context.cacheDir)
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", tempFile)
+            val tempFile = File.createTempFile(AttachmentRepository.CAMERA_FILE_PREFIX, ".jpg", context.cacheDir)
+            context.contentUriFor(tempFile)
         } catch (e: Exception) {
             e.printStackTrace()
             null
@@ -309,30 +259,23 @@ fun NewExpenseScreen(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text("Categoria:", style = MaterialTheme.typography.bodyMedium)
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            CATEGORY_OPTIONS.take(3).forEach { cat ->
-                FilterChip(
-                    selected = selectedCategory == cat,
-                    onClick = { selectedCategory = cat },
-                    label = { Text(cat) }
-                )
-            }
-        }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            CATEGORY_OPTIONS.drop(3).forEach { cat ->
-                FilterChip(
-                    selected = selectedCategory == cat,
-                    onClick = { selectedCategory = cat },
-                    label = { Text(cat) }
-                )
+        ExpenseCategories.CATEGORY_OPTIONS.chunked(3).forEach { rowOptions ->
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                rowOptions.forEach { cat ->
+                    FilterChip(
+                        selected = selectedCategory == cat,
+                        onClick = { selectedCategory = cat },
+                        label = { Text(cat) }
+                    )
+                }
             }
         }
 
-        if (selectedCategory != CATEGORY_TELEPASS) {
+        if (selectedCategory != ExpenseCategories.TELEPASS) {
             Spacer(modifier = Modifier.height(8.dp))
             Text("Metodo Pagamento:", style = MaterialTheme.typography.bodyMedium)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                PAYMENT_OPTIONS.forEach { pay ->
+                ExpenseCategories.PAYMENT_OPTIONS.forEach { pay ->
                     FilterChip(
                         selected = selectedPayment == pay,
                         onClick = { selectedPayment = pay },
@@ -381,7 +324,7 @@ fun NewExpenseScreen(
                         return@launch
                     }
                     val doubleAmount = parseAmount(amountInput) ?: 0.0
-                    if (doubleAmount <= 0.0 && selectedCategory != CATEGORY_TELEPASS) {
+                    if (doubleAmount <= 0.0 && selectedCategory != ExpenseCategories.TELEPASS) {
                         statusMessage = "⚠️ Inserisci un importo valido!"
                         return@launch
                     }
@@ -393,19 +336,20 @@ fun NewExpenseScreen(
                             attachmentRepository.saveAttachment(it, isPdf = pdfUri != null, dataSpesa = dateInput)
                         }
 
-                        val spesaInsert = SpesaInsert(
+                        val spesa = Spesa(
                             data = dateInput,
                             destinazione = destInput.ifBlank { null },
                             scopo = scopoInput.ifBlank { null },
-                            categoria = categoryKey(selectedCategory, selectedPayment),
-                            metodoPagamento = paymentLabel(selectedCategory, selectedPayment),
+                            categoria = ExpenseCategories.categoryKey(selectedCategory, selectedPayment),
+                            metodoPagamento = ExpenseCategories.paymentLabel(selectedCategory, selectedPayment),
                             importo = doubleAmount,
                             note = noteInput.ifBlank { null },
                             allegatoPath = attachmentUrl,
-                            valutaStraniera = if (isForeignCurrency) 1 else 0
+                            valutaStraniera = isForeignCurrency
                         )
 
-                        spesaRepository.insertSpesa(spesaInsert)
+                        spesaRepository.insertSpesa(spesa)
+                        attachmentRepository.clearTemporaryPhotos()
 
                         statusMessage = if (currentUri != null && attachmentUrl == null) {
                             "⚠️ Spesa registrata, ma non è stato possibile salvare l'allegato."
@@ -472,20 +416,21 @@ fun NewExpenseScreen(
         )
     }
 
-    if (showCropDialog && cropSourceUri != null) {
+    cropSourceUri?.let { sourceUri ->
         CropImageDialog(
-            sourceUri = cropSourceUri!!,
+            sourceUri = sourceUri,
             onCropSuccess = { croppedUri ->
                 imageUri = croppedUri
                 pdfUri = null
-                showCropDialog = false
+                cropSourceUri = null
             },
             onDismiss = {
-                if (imageUri == null) {
-                    imageUri = cropSourceUri
+                // Without cropping, a new photo is used as it is (re-cropping the current one changes nothing)
+                if (sourceUri != imageUri) {
+                    imageUri = sourceUri
                     pdfUri = null
                 }
-                showCropDialog = false
+                cropSourceUri = null
             }
         )
     }

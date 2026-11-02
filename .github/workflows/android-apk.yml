@@ -56,14 +56,14 @@ jobs:
             echo "::warning::DROPBOX_APP_KEY non impostata (Settings > Secrets and variables > Actions): l'APK funzionerà ma non potrà collegarsi a Dropbox."
           fi
 
-      - name: Build release APK
+      - name: Build release APK and run unit tests
         env:
           DROPBOX_APP_KEY: ${{ secrets.DROPBOX_APP_KEY || vars.DROPBOX_APP_KEY }}
           RELEASE_STORE_FILE: ${{ runner.temp }}/release.keystore
           RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
           RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
           RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon testReleaseUnitTest assembleRelease
 
       - name: Verify APK signature
         run: |
