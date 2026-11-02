@@ -43,12 +43,15 @@ fun CropImageDialog(
     val scope = rememberCoroutineScope()
     var bitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isCropping by remember { mutableStateOf(false) }
+    var loadFailed by remember { mutableStateOf(false) }
 
     LaunchedEffect(sourceUri) {
         // Decoding a full-resolution photo is too slow for the main thread
-        bitmap = withContext(Dispatchers.IO) {
+        val loaded = withContext(Dispatchers.IO) {
             ImageUtils.loadOrientedBitmap(context, sourceUri, ImageUtils.PREVIEW_MAX_DIMENSION)
         }
+        bitmap = loaded
+        loadFailed = loaded == null
     }
 
     val loadedBitmap = bitmap
@@ -59,8 +62,19 @@ fun CropImageDialog(
                 color = MaterialTheme.colorScheme.surface,
                 modifier = Modifier.padding(16.dp)
             ) {
-                Box(modifier = Modifier.padding(24.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator()
+                if (loadFailed) {
+                    // Never leave the user in front of an endless spinner
+                    Column(modifier = Modifier.padding(24.dp)) {
+                        Text("⚠️ Impossibile aprire la foto per il ritaglio.")
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
+                            Text("Usa la foto senza ritaglio")
+                        }
+                    }
+                } else {
+                    Box(modifier = Modifier.padding(24.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 }
             }
         }
