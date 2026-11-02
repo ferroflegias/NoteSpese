@@ -6,14 +6,24 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import java.io.ByteArrayOutputStream
 
 object ImageUtils {
+
+    /**
+     * Longest side used for receipts: enough for OCR and printing, while keeping the
+     * bitmap around 10-15 MB instead of 50+ MB for a modern camera photo.
+     */
+    const val MAX_IMAGE_DIMENSION = 2048
+
+    /** JPEG quality used for saved attachments and cropped photos. */
+    const val JPEG_QUALITY = 85
 
     /**
      * Decodes the image at [uri] applying its EXIF rotation. Very large photos are
      * subsampled so that the longest side stays below [maxDimension], avoiding OOM.
      */
-    fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int = 4096): Bitmap? {
+    fun loadOrientedBitmap(context: Context, uri: Uri, maxDimension: Int = MAX_IMAGE_DIMENSION): Bitmap? {
         return try {
             val resolver = context.contentResolver
 
@@ -46,6 +56,25 @@ object ImageUtils {
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    /**
+     * Re-encodes a photo as a JPEG no larger than [MAX_IMAGE_DIMENSION], with the EXIF rotation
+     * applied. Returns null if the image cannot be decoded. Call it off the main thread.
+     */
+    fun compressImageForAttachment(context: Context, uri: Uri): ByteArray? {
+        val bitmap = loadOrientedBitmap(context, uri) ?: return null
+        return try {
+            ByteArrayOutputStream().use { output ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, output)
+                output.toByteArray()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        } finally {
+            bitmap.recycle()
         }
     }
 
