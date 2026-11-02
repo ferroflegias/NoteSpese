@@ -34,8 +34,10 @@ object ImageUtils {
         return try {
             val resolver = context.contentResolver
 
+            // With inJustDecodeBounds decodeStream always returns null: only the sizes are read
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+            val stream = resolver.openInputStream(uri) ?: return null
+            stream.use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
             val longestSide = maxOf(bounds.outWidth, bounds.outHeight)
